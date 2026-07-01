@@ -32,6 +32,28 @@ def get_prompt(model: SentenceTransformer, prompt_name: str) -> str:
     return prompts[prompt_name]
 
 
+def _features_to_device(
+    features: dict,
+    device: torch.device,
+    max_length: int,
+) -> dict:
+    """Move token tensors to device; leave metadata fields (e.g. str) untouched."""
+    try:
+        from sentence_transformers.util import batch_to_device
+
+        features = batch_to_device(features, device)
+    except Exception:
+        features = {
+            key: value.to(device) if isinstance(value, torch.Tensor) else value
+            for key, value in features.items()
+        }
+
+    for key, value in list(features.items()):
+        if isinstance(value, torch.Tensor) and value.ndim >= 2 and value.shape[1] > max_length:
+            features[key] = value[:, :max_length]
+    return features
+
+
 def encode_with_prompt(
     model: SentenceTransformer,
     texts: list[str],
@@ -41,15 +63,14 @@ def encode_with_prompt(
     max_length: int,
 ) -> torch.Tensor:
     """Differentiable forward pass with prompt prefix."""
-    prompt = get_prompt(model, prompt_name)
-    prompted = [f"{prompt}{text}" for text in texts]
-    features = model.tokenize(prompted)
-    features = {key: value.to(device) for key, value in features.items()}
-    if "attention_mask" in features:
-        # Respect max_length from config during training.
-        for key, value in features.items():
-            if value.shape[1] > max_length:
-                features[key] = value[:, :max_length]
+    try:
+        features = model.tokenize(texts, prompt_name=prompt_name)
+    except TypeError:
+        prompt = get_prompt(model, prompt_name)
+        prompted = [f"{prompt}{text}" for text in texts]
+        features = model.tokenize(prompted)
+
+    features = _features_to_device(features, device, max_length)
     outputs = model(features)
     embeddings = outputs["sentence_embedding"]
     return F.normalize(embeddings, p=2, dim=1)

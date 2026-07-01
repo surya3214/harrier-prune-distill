@@ -1,0 +1,58 @@
+# HuggingFace dataset definitions for scripts/01_download_local.py
+# Run on local infra (internet). Outputs deduplicated JSONL/Parquet per language.
+
+en:
+  target_samples: 2300000
+  sources:
+    - name: c4
+      hf_path: allenai/c4
+      config: en
+      split: train
+      streaming: true
+      text_column: text
+      target_samples: 2000000
+    - name: all_nli
+      hf_path: sentence-transformers/all-nli
+      config: null
+      split: train
+      streaming: false
+      text_columns:
+        - premise
+        - hypothesis
+      target_samples: 300000
+
+ko:
+  target_samples: 2300000
+  sources:
+    - name: mc4
+      hf_path: mc4
+      config: ko
+      split: train
+      streaming: true
+      text_column: text
+      target_samples: 2000000
+    - name: klue_nli
+      hf_path: klue/klue
+      config: nli
+      split: train
+      streaming: false
+      text_columns:
+        - premise
+        - hypothesis
+      target_samples: 50000
+    - name: kowikitext
+      hf_path: maywell/kowikitext
+      config: null
+      split: train
+      streaming: true
+      text_column: text
+      target_samples: 200000
+      optional: true
+
+dedupe:
+  normalize_whitespace: true
+  lowercase_for_dedupe: false
+
+output:
+  format: parquet
+  shard_size: 100000

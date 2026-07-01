@@ -1,0 +1,11 @@
+torch>=2.1.0
+transformers>=4.40.0
+sentence-transformers>=3.0.0
+datasets>=2.19.0
+pyarrow>=15.0.0
+pyyaml>=6.0.0
+mteb>=1.12.0
+numpy>=1.24.0
+tqdm>=4.66.0
+accelerate>=0.30.0
+scipy>=1.11.0

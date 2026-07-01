@@ -1,0 +1,45 @@
+# Populate all paths before running. GPU scripts read only from gpu_data_root.
+paths:
+  local_data_root: ""        # local download target (internet)
+  gpu_data_root: ""          # rsync destination on GPU node
+  teacher_model: ""          # full 18-layer microsoft/harrier-oss-v1-270m path
+  student_model: ""          # 12-layer pruned checkpoint path
+  output_dir: ""             # checkpoints, cached embeddings, logs
+  en_corpus: ""              # e.g. {gpu_data_root}/en/corpus.parquet
+  ko_corpus: ""              # e.g. {gpu_data_root}/ko/corpus.parquet
+  en_embeddings: ""          # e.g. {output_dir}/embeddings/en_embeddings.parquet
+  ko_embeddings: ""          # e.g. {output_dir}/embeddings/ko_embeddings.parquet
+
+data:
+  pilot_samples_per_lang: 0    # 0 = disabled; use full_en_samples / full_ko_samples
+  full_en_samples: 2300000
+  full_ko_samples: 2300000
+  max_length: 512
+  min_text_chars: 20
+
+training:
+  embed_batch_size_per_gpu: 192
+  train_batch_size_per_gpu: 256
+  learning_rate: 1.0e-5
+  num_epochs_en: 1
+  num_epochs_ko: 1
+  warmup_ratio: 0.05
+  weight_decay: 0.01
+  grad_clip: 1.0
+  seed: 42
+  prompt_name: sts_query
+
+eval:
+  tasks:
+    - STSBenchmark
+    - KorSTS
+  prompt_name: sts_query
+  batch_size: 64
+
+# Future phase: retrieval distillation (not used in v1 scripts)
+phases:
+  retrieval:
+    query_prompt: web_search_query
+    doc_prompt: null
+    datasets:
+      - ms_marco_v2.1

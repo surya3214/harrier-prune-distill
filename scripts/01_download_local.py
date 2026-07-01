@@ -69,7 +69,18 @@ def stream_hf_dataset(source_cfg: dict):
     kwargs = {"path": hf_path, "split": split, "streaming": streaming}
     if config:
         kwargs["name"] = config
-    return load_dataset(**kwargs)
+
+    try:
+        return load_dataset(**kwargs)
+    except RuntimeError as exc:
+        message = str(exc)
+        if "Dataset scripts are no longer supported" in message:
+            hints = {
+                "mc4": "Use hf_path: allenai/c4 with the same language config (e.g. config: ko).",
+            }
+            hint = hints.get(hf_path, "Pick a Parquet-native dataset on Hugging Face Hub.")
+            raise RuntimeError(f"{message} Dataset '{hf_path}' uses a legacy loading script. {hint}") from exc
+        raise
 
 
 def collect_from_source(

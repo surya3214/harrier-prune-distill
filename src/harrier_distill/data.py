@@ -7,8 +7,6 @@ from typing import Any, Iterator
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
-import torch
-from torch.utils.data import Dataset
 
 from harrier_distill.text import normalize_text
 
@@ -64,7 +62,7 @@ def load_corpus_table(path: Path) -> pa.Table:
     return pq.read_table(path)
 
 
-class CachedEmbeddingDataset(Dataset):
+class CachedEmbeddingDataset:
     """Dataset of text + precomputed teacher embeddings stored in Parquet."""
 
     def __init__(self, parquet_path: Path):
@@ -90,6 +88,8 @@ class CachedEmbeddingDataset(Dataset):
         return len(self.texts)
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
+        import torch
+
         return {
             "text": self.texts[idx],
             "teacher_embedding": torch.from_numpy(self.embeddings[idx]),

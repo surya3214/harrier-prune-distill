@@ -59,10 +59,10 @@ Sources:
 | Lang | Dataset | Target |
 |------|---------|--------|
 | EN | `allenai/c4` (en) | 2.0M |
-| EN | `sentence-transformers/all-nli` | 300k unique |
-| KO | `mc4` (ko) | 2.0M |
+| EN | `sentence-transformers/all-nli` (`pair`) | 300k unique |
+| KO | `allenai/c4` (ko) | 2.0M |
 | KO | `klue/klue` (nli) | 50k unique |
-| KO | `maywell/kowikitext` (optional) | 200k |
+| KO | `HuggingFaceFW/fineweb-2` (`kor_Hang`, optional) | 200k |
 
 ## Step 2 — Migrate to GPU
 

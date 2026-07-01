@@ -13,19 +13,19 @@ en:
       target_samples: 2000000
     - name: all_nli
       hf_path: sentence-transformers/all-nli
-      config: null
+      config: pair
       split: train
       streaming: false
       text_columns:
-        - premise
-        - hypothesis
+        - anchor
+        - positive
       target_samples: 300000
 
 ko:
   target_samples: 2300000
   sources:
-    - name: mc4
-      hf_path: mc4
+    - name: c4_ko
+      hf_path: allenai/c4
       config: ko
       split: train
       streaming: true
@@ -40,9 +40,9 @@ ko:
         - premise
         - hypothesis
       target_samples: 50000
-    - name: kowikitext
-      hf_path: maywell/kowikitext
-      config: null
+    - name: fineweb2_ko
+      hf_path: HuggingFaceFW/fineweb-2
+      config: kor_Hang
       split: train
       streaming: true
       text_column: text

@@ -19,7 +19,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from harrier_distill.config import get_resolved_paths, load_distill_config, require_path
-from harrier_distill.data import ensure_dir, merge_parquet_shards
+from harrier_distill.data import append_corpus_shard, ensure_dir, merge_parquet_shards
 from harrier_distill.distributed import barrier, cleanup_distributed, init_distributed, is_main_process
 
 
@@ -73,7 +73,7 @@ def encode_batch(
 
 
 def write_shard(rows: list[dict], shard_path: Path) -> None:
-    pq.write_table(pa.Table.from_pylist(rows), shard_path, compression="zstd")
+    append_corpus_shard(rows, shard_path)
 
 
 def main() -> None:

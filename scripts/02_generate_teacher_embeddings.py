@@ -19,8 +19,15 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from harrier_distill.config import get_resolved_paths, load_distill_config, require_path
-from harrier_distill.data import append_corpus_shard, ensure_dir, merge_parquet_shards
-from harrier_distill.distributed import barrier, cleanup_distributed, init_distributed, is_main_process
+from harrier_distill.data import (
+    append_corpus_shard,
+    clear_rank_done_markers,
+    ensure_dir,
+    merge_parquet_shards,
+    wait_for_rank_done_markers,
+    write_rank_done_marker,
+)
+from harrier_distill.distributed import cleanup_distributed, init_distributed, is_main_process, release_gpu_resources
 
 
 def parse_args() -> argparse.Namespace:
@@ -76,6 +83,32 @@ def write_shard(rows: list[dict], shard_path: Path) -> None:
     append_corpus_shard(rows, shard_path)
 
 
+def finalize_shards(
+    *,
+    rank: int,
+    world_size: int,
+    shard_dir: Path,
+    output_path: Path,
+) -> None:
+    """CPU-only merge on rank 0; avoid NCCL barriers after GPU work."""
+    write_rank_done_marker(shard_dir, rank)
+    release_gpu_resources()
+
+    if not is_main_process(rank):
+        cleanup_distributed()
+        return
+
+    wait_for_rank_done_markers(shard_dir, world_size)
+    shard_paths = sorted(shard_dir.glob("rank*_part_*.parquet"))
+    if not shard_paths:
+        raise RuntimeError(f"No embedding shards written under {shard_dir}")
+
+    merged_rows = merge_parquet_shards(shard_dir, output_path, pattern="rank*_part_*.parquet")
+    print(f"Wrote {merged_rows:,} embeddings -> {output_path}")
+    clear_rank_done_markers(shard_dir)
+    cleanup_distributed()
+
+
 def main() -> None:
     args = parse_args()
     rank, _local_rank, world_size, device = init_distributed()
@@ -109,8 +142,8 @@ def main() -> None:
         batch_size=batch_size,
         sampler=sampler,
         shuffle=False,
-        num_workers=2,
-        pin_memory=True,
+        num_workers=0,
+        pin_memory=device.type == "cuda",
         collate_fn=collate_rows,
     )
 
@@ -128,9 +161,9 @@ def main() -> None:
 
     shard_dir = output_path.parent / f".{args.lang}_embedding_shards"
     ensure_dir(shard_dir)
+    clear_rank_done_markers(shard_dir)
     for old in shard_dir.glob(f"rank{rank}_part_*.parquet"):
         old.unlink()
-    barrier()
 
     rows: list[dict] = []
     shard_idx = 0
@@ -163,17 +196,14 @@ def main() -> None:
         shard_path = shard_dir / f"rank{rank}_part_{shard_idx:05d}.parquet"
         write_shard(rows, shard_path)
 
-    barrier()
-
-    if is_main_process(rank):
-        all_shards = sorted(shard_dir.glob("rank*_part_*.parquet"))
-        if not all_shards:
-            raise RuntimeError(f"No embedding shards written under {shard_dir}")
-        merged_rows = merge_parquet_shards(shard_dir, output_path, pattern="rank*_part_*.parquet")
-        print(f"Wrote {merged_rows:,} embeddings -> {output_path}")
-
-    barrier()
-    cleanup_distributed()
+    del loader, dataset, table, texts, ids, langs, model
+    release_gpu_resources()
+    finalize_shards(
+        rank=rank,
+        world_size=world_size,
+        shard_dir=shard_dir,
+        output_path=output_path,
+    )
 
 
 if __name__ == "__main__":

@@ -51,11 +51,47 @@ def merge_parquet_shards(shard_dir: Path, output_path: Path, pattern: str = "par
     if not shard_paths:
         raise FileNotFoundError(f"No parquet shards found in {shard_dir} matching {pattern}")
 
-    tables = [pq.read_table(path) for path in shard_paths]
-    merged = pa.concat_tables(tables, promote_options="default")
     ensure_dir(output_path.parent)
-    pq.write_table(merged, output_path, compression="zstd")
-    return merged.num_rows
+    writer: pq.ParquetWriter | None = None
+    total_rows = 0
+    try:
+        for path in shard_paths:
+            table = pq.read_table(path)
+            total_rows += table.num_rows
+            if writer is None:
+                writer = pq.ParquetWriter(output_path, table.schema, compression="zstd")
+            writer.write_table(table)
+    finally:
+        if writer is not None:
+            writer.close()
+    return total_rows
+
+
+def write_rank_done_marker(shard_dir: Path, rank: int) -> Path:
+    ensure_dir(shard_dir)
+    marker = shard_dir / f"rank{rank}.done"
+    marker.write_text("done\n", encoding="utf-8")
+    return marker
+
+
+def wait_for_rank_done_markers(shard_dir: Path, world_size: int, *, timeout_sec: int = 3600) -> None:
+    import time
+
+    deadline = time.time() + timeout_sec
+    while time.time() < deadline:
+        done_count = len(list(shard_dir.glob("rank*.done")))
+        if done_count >= world_size:
+            return
+        time.sleep(1)
+    raise TimeoutError(
+        f"Timed out waiting for embedding shards in {shard_dir}. "
+        f"Found {len(list(shard_dir.glob('rank*.done')))}/{world_size} done markers."
+    )
+
+
+def clear_rank_done_markers(shard_dir: Path) -> None:
+    for marker in shard_dir.glob("rank*.done"):
+        marker.unlink(missing_ok=True)
 
 
 def load_corpus_table(path: Path) -> pa.Table:

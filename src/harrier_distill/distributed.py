@@ -27,7 +27,18 @@ def init_distributed() -> tuple[int, int, int, torch.device]:
 
 def cleanup_distributed() -> None:
     if dist.is_initialized():
-        dist.destroy_process_group()
+        try:
+            dist.destroy_process_group()
+        except RuntimeError:
+            # Other ranks may have already torn down NCCL during CPU merge.
+            pass
+
+
+def release_gpu_resources() -> None:
+    """Clear CUDA caches before CPU-only sync/merge."""
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
 
 
 def is_main_process(rank: int) -> bool:

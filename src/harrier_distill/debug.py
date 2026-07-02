@@ -9,7 +9,8 @@ import torch
 from scipy.stats import spearmanr
 from sentence_transformers import SentenceTransformer
 
-from harrier_distill.model import encode_with_prompt, load_sentence_transformer
+from harrier_distill.model import load_sentence_transformer
+from harrier_distill.sts import encode_pair_similarities, encode_texts, load_sts_parquet
 
 CACHE_MSE_THRESHOLD = 1e-4
 STUDENT_MSE_THRESHOLD = 1e-3
@@ -50,30 +51,6 @@ def _length_bucket(char_len: int) -> str:
     if char_len < 300:
         return "medium"
     return "long"
-
-
-@torch.inference_mode()
-def encode_texts(
-    model: SentenceTransformer,
-    texts: list[str],
-    *,
-    prompt_name: str,
-    device: torch.device,
-    max_length: int,
-    batch_size: int = 64,
-) -> np.ndarray:
-    outputs: list[np.ndarray] = []
-    for start in range(0, len(texts), batch_size):
-        batch = texts[start : start + batch_size]
-        emb = encode_with_prompt(
-            model,
-            batch,
-            prompt_name=prompt_name,
-            device=device,
-            max_length=max_length,
-        )
-        outputs.append(emb.float().cpu().numpy())
-    return np.concatenate(outputs, axis=0).astype(np.float32)
 
 
 def pointwise_alignment_metrics(
@@ -153,35 +130,6 @@ def validate_cache_alignment(
     }
 
 
-def _encode_pair_similarities(
-    model: SentenceTransformer,
-    sentence1: list[str],
-    sentence2: list[str],
-    *,
-    prompt_name: str,
-    device: torch.device,
-    max_length: int,
-    batch_size: int,
-) -> np.ndarray:
-    emb1 = encode_texts(
-        model,
-        sentence1,
-        prompt_name=prompt_name,
-        device=device,
-        max_length=max_length,
-        batch_size=batch_size,
-    )
-    emb2 = encode_texts(
-        model,
-        sentence2,
-        prompt_name=prompt_name,
-        device=device,
-        max_length=max_length,
-        batch_size=batch_size,
-    )
-    return np.sum(emb1 * emb2, axis=1)
-
-
 @torch.inference_mode()
 def pairwise_sts_proxy(
     teacher_model: SentenceTransformer,
@@ -189,20 +137,31 @@ def pairwise_sts_proxy(
     *,
     dataset_name: str = "mteb/stsbenchmark-sts",
     split: str = "validation",
+    sts_parquet: str | Path | None = None,
     prompt_name: str = "sts_query",
     device: torch.device,
     max_length: int,
     batch_size: int = 64,
 ) -> dict[str, Any]:
     """Lightweight pairwise STS proxy without a full MTEB run."""
-    from datasets import load_dataset
+    if sts_parquet is not None:
+        pairs = load_sts_parquet(sts_parquet)
+        sentence1 = pairs.sentence1
+        sentence2 = pairs.sentence2
+        labels = pairs.score
+        source = str(sts_parquet)
+        split_name = pairs.split
+    else:
+        from datasets import load_dataset
 
-    dataset = load_dataset(dataset_name, split=split)
-    sentence1 = [row["sentence1"] for row in dataset]
-    sentence2 = [row["sentence2"] for row in dataset]
-    labels = np.asarray([float(row["score"]) for row in dataset], dtype=np.float32)
+        dataset = load_dataset(dataset_name, split=split)
+        sentence1 = [row["sentence1"] for row in dataset]
+        sentence2 = [row["sentence2"] for row in dataset]
+        labels = np.asarray([float(row["score"]) for row in dataset], dtype=np.float32)
+        source = dataset_name
+        split_name = split
 
-    teacher_sims = _encode_pair_similarities(
+    teacher_sims = encode_pair_similarities(
         teacher_model,
         sentence1,
         sentence2,
@@ -211,7 +170,7 @@ def pairwise_sts_proxy(
         max_length=max_length,
         batch_size=batch_size,
     )
-    student_sims = _encode_pair_similarities(
+    student_sims = encode_pair_similarities(
         student_model,
         sentence1,
         sentence2,
@@ -227,8 +186,8 @@ def pairwise_sts_proxy(
 
     ratio = student_spearman / teacher_spearman if teacher_spearman != 0 else None
     return {
-        "dataset": dataset_name,
-        "split": split,
+        "dataset": source,
+        "split": split_name,
         "pair_count": len(labels),
         "sts_spearman_teacher": teacher_spearman,
         "sts_spearman_student": student_spearman,
@@ -277,7 +236,7 @@ def nli_pair_probe(
     premises = [premises[i] for i in indices]
     hypotheses = [hypotheses[i] for i in indices]
 
-    teacher_sims = _encode_pair_similarities(
+    teacher_sims = encode_pair_similarities(
         teacher_model,
         premises,
         hypotheses,
@@ -286,7 +245,7 @@ def nli_pair_probe(
         max_length=max_length,
         batch_size=batch_size,
     )
-    student_sims = _encode_pair_similarities(
+    student_sims = encode_pair_similarities(
         student_model,
         premises,
         hypotheses,
@@ -376,6 +335,7 @@ def run_alignment_report(
     run_sts_proxy: bool = True,
     run_nli_probe: bool = False,
     pruned_baseline_path: str | Path | None = None,
+    sts_parquet: str | Path | None = None,
 ) -> dict[str, Any]:
     """Run cache, pointwise, and pairwise diagnostics for teacher vs student."""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -440,6 +400,7 @@ def run_alignment_report(
             device=device,
             max_length=max_length,
             batch_size=batch_size,
+            sts_parquet=sts_parquet,
         )
 
     if run_nli_probe:

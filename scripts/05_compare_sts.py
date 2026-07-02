@@ -11,7 +11,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from harrier_distill.config import get_resolved_paths, load_distill_config, require_path
+from harrier_distill.config import get_resolved_paths, load_distill_config, require_path, resolve_sts_paths
 from harrier_distill.eval import compare_sts, print_compare_summary, save_eval_summary
 
 
@@ -42,6 +42,11 @@ def parse_args() -> argparse.Namespace:
         help="Explicit MTEB task names (overrides --suite)",
     )
     parser.add_argument("--output-dir", default=None, help="Directory for comparison JSON and MTEB runs")
+    parser.add_argument(
+        "--local-sts",
+        action="store_true",
+        help="Evaluate from local STS parquet (offline; no MTEB/HF download)",
+    )
     return parser.parse_args()
 
 
@@ -76,6 +81,9 @@ def main() -> None:
         prompt_name=eval_cfg.get("prompt_name", "sts_query"),
         batch_size=int(eval_cfg.get("batch_size", 64)),
         output_dir=eval_dir,
+        use_local_sts=args.local_sts,
+        local_task_paths=resolve_sts_paths(cfg) if args.local_sts else None,
+        max_length=int(cfg.get("data", {}).get("max_length", 512)),
     )
 
     print_compare_summary(comparison)

@@ -1,0 +1,22 @@
+# STS benchmark definitions for scripts/01_download_sts_local.py
+# Run on local infra (internet). Outputs parquet under {local_data_root}/sts/
+
+en:
+  task: STSBenchmark
+  sources:
+    - name: stsbenchmark_test
+      hf_path: mteb/stsbenchmark-sts
+      split: test
+    - name: stsbenchmark_validation
+      hf_path: mteb/stsbenchmark-sts
+      split: validation
+
+ko:
+  task: KorSTS
+  sources:
+    - name: korsts_test
+      hf_path: mteb/KorSTS
+      split: test
+    - name: korsts_valid
+      hf_path: mteb/KorSTS
+      split: valid

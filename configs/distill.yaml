@@ -9,6 +9,9 @@ paths:
   ko_corpus: ""              # e.g. {gpu_data_root}/ko/corpus.parquet
   en_embeddings: ""          # e.g. {output_dir}/embeddings/en_embeddings.parquet
   ko_embeddings: ""          # e.g. {output_dir}/embeddings/ko_embeddings.parquet
+  sts_data_root: ""            # e.g. {gpu_data_root}/sts
+  en_sts_test: ""              # e.g. {sts_data_root}/en/stsbenchmark_test.parquet
+  ko_sts_test: ""              # e.g. {sts_data_root}/ko/korsts_test.parquet
 
 data:
   pilot_samples_per_lang: 0    # 0 = disabled; use full_en_samples / full_ko_samples
@@ -41,6 +44,14 @@ eval:
     ko: [KorSTS]
     multilingual: [STSBenchmark, KorSTS]
     extended: [STSBenchmark, KorSTS, STS22.v2, STSBenchmarkMultilingualSTS]
+  local_sts:
+    split: test
+    tasks:
+      STSBenchmark: en/stsbenchmark_test.parquet
+      KorSTS: ko/korsts_test.parquet
+    dev_splits:
+      STSBenchmark: en/stsbenchmark_validation.parquet
+      KorSTS: ko/korsts_valid.parquet
 
 debug:
   sample_size: 5000

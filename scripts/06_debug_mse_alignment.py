@@ -11,7 +11,12 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from harrier_distill.config import get_resolved_paths, load_distill_config, require_path
+from harrier_distill.config import (
+    get_resolved_paths,
+    load_distill_config,
+    require_path,
+    resolve_sts_dev_paths,
+)
 from harrier_distill.debug import (
     print_alignment_summary,
     run_alignment_report,
@@ -87,6 +92,12 @@ def main() -> None:
     embeddings_path = resolve_embeddings_path(args, paths)
     teacher_path = resolve_teacher_path(args, cfg, paths)
     pruned_baseline = args.pruned_baseline
+    sts_parquet = None
+    if args.lang == "en":
+        dev_paths = resolve_sts_dev_paths(cfg)
+        sts_parquet = dev_paths.get("STSBenchmark")
+        if sts_parquet is not None and not sts_parquet.exists():
+            sts_parquet = None
 
     report = run_alignment_report(
         teacher_path=teacher_path,
@@ -103,6 +114,7 @@ def main() -> None:
         run_sts_proxy=not args.no_sts_proxy,
         run_nli_probe=args.nli_probe,
         pruned_baseline_path=pruned_baseline,
+        sts_parquet=sts_parquet,
     )
 
     print_alignment_summary(report)

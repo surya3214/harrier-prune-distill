@@ -23,8 +23,8 @@ run_train() {
 }
 
 echo "=== Baseline eval (populate paths in distill.yaml first) ==="
-echo "python $ROOT/scripts/04_eval_sts.py --config $CONFIG --model <student_model> --label pruned_baseline"
-echo "python $ROOT/scripts/04_eval_sts.py --config $CONFIG --model <teacher_model> --label teacher"
+echo "python $ROOT/scripts/04_eval_sts.py --config $CONFIG --model <student_model> --label pruned_baseline --local-sts"
+echo "python $ROOT/scripts/04_eval_sts.py --config $CONFIG --model <teacher_model> --label teacher --local-sts"
 
 echo "=== EN: embed + train ==="
 run_embed en
@@ -39,4 +39,4 @@ torchrun --standalone --nproc_per_node="$NPROC" \
   --lang ko
 
 echo "=== Final eval ==="
-echo "python $ROOT/scripts/04_eval_sts.py --config $CONFIG --model <output_dir>/checkpoint_final --label distilled_final"
+echo "python $ROOT/scripts/04_eval_sts.py --config $CONFIG --model <output_dir>/checkpoint_final --label distilled_final --local-sts"

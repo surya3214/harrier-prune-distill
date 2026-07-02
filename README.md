@@ -8,10 +8,11 @@ Distill a **12-layer pruned** Harrier student from the full **18-layer `microsof
 Local (internet)                GPU (offline, 4x H100)
 ─────────────────               ───────────────────────
 01_download_local.py    →       rsync corpora
+01_download_sts_local.py →      rsync STS parquet
                                 02_generate_teacher_embeddings.py (EN, KO)
                                 03_train_distill_mse.py (EN → checkpoint_en)
                                 03_train_distill_mse.py (KO → checkpoint_final)
-                                04_eval_sts.py (STS-B + KorSTS)
+                                04_eval_sts.py (STS-B + KorSTS, --local-sts offline)
 ```
 
 - **Prompt:** `sts_query` on all distillation and eval text
@@ -39,9 +40,12 @@ paths:
   ko_corpus: "/mnt/data/harrier-distill/ko/corpus.parquet"
   en_embeddings: "/mnt/data/harrier-distill/output/embeddings/en_embeddings.parquet"
   ko_embeddings: "/mnt/data/harrier-distill/output/embeddings/ko_embeddings.parquet"
+  sts_data_root: "/mnt/data/harrier-distill/sts"
+  en_sts_test: "/mnt/data/harrier-distill/sts/en/stsbenchmark_test.parquet"
+  ko_sts_test: "/mnt/data/harrier-distill/sts/ko/korsts_test.parquet"
 ```
 
-Dataset sources are defined in [`configs/datasets.yaml`](configs/datasets.yaml).
+Dataset sources are defined in [`configs/datasets.yaml`](configs/datasets.yaml). STS sources are in [`configs/sts_datasets.yaml`](configs/sts_datasets.yaml).
 
 ## Step 1 — Download on local (internet)
 
@@ -64,6 +68,20 @@ Sources:
 | KO | `klue/klue` (nli) | 50k unique |
 | KO | `HuggingFaceFW/fineweb-2` (`kor_Hang`, optional) | 200k |
 
+## Step 1b — Download STS benchmarks (local, internet)
+
+```bash
+python scripts/01_download_sts_local.py --config configs/distill.yaml
+```
+
+Outputs under `{local_data_root}/sts/`:
+
+- `en/stsbenchmark_test.parquet` (1,379 pairs)
+- `en/stsbenchmark_validation.parquet` (1,500 pairs, for debug proxy)
+- `ko/korsts_test.parquet` (1,376 pairs)
+- `ko/korsts_valid.parquet` (1,465 pairs)
+- `manifest.json`
+
 ## Step 2 — Migrate to GPU
 
 ```bash
@@ -74,12 +92,21 @@ Ensure teacher and pruned student checkpoints are also available on the GPU node
 
 ## Step 3 — Baseline STS eval (recommended)
 
+Online (MTEB downloads from HuggingFace):
+
 ```bash
 python scripts/04_eval_sts.py --config configs/distill.yaml \
   --model /models/harrier-12l-pruned --label pruned_baseline
 
 python scripts/04_eval_sts.py --config configs/distill.yaml \
   --model /models/harrier-oss-v1-270m --label teacher
+```
+
+Offline on GPU (uses local STS parquet, no internet):
+
+```bash
+python scripts/04_eval_sts.py --config configs/distill.yaml \
+  --model /models/harrier-oss-v1-270m --label teacher --local-sts
 ```
 
 ## Step 4 — EN distillation (embed + train)
@@ -119,7 +146,7 @@ bash scripts/run_gpu_pipeline.sh
 
 ```bash
 python scripts/04_eval_sts.py --config configs/distill.yaml \
-  --model /mnt/data/harrier-distill/output/checkpoint_final --label distilled_final
+  --model /mnt/data/harrier-distill/output/checkpoint_final --label distilled_final --local-sts
 ```
 
 Results are saved under `{output_dir}/eval/`.
@@ -138,14 +165,13 @@ python scripts/05_compare_sts.py --config configs/distill.yaml \
   --student /mnt/data/harrier-distill/output/checkpoint_final \
   --suite en
 
-# Include pruned baseline for a 3-way table
+# Offline on GPU
 python scripts/05_compare_sts.py --config configs/distill.yaml \
   --student /mnt/data/harrier-distill/output/checkpoint_final \
-  --baseline /models/harrier-12l-pruned \
-  --suite multilingual
+  --suite multilingual --local-sts
 ```
 
-Suites: `en` (STSBenchmark), `ko` (KorSTS), `multilingual` (both), `extended` (adds STS22.v2 + STSBenchmarkMultilingualSTS).
+Suites: `en` (STSBenchmark), `ko` (KorSTS), `multilingual` (both), `extended` (adds STS22.v2 + STSBenchmarkMultilingualSTS; online only).
 
 ## Step 8 — Debug MSE vs STS gap
 
@@ -213,6 +239,7 @@ configs/
   datasets.yaml         # HF dataset definitions
 scripts/
   01_download_local.py
+  01_download_sts_local.py
   02_generate_teacher_embeddings.py
   03_train_distill_mse.py
   04_eval_sts.py
@@ -220,5 +247,5 @@ scripts/
   06_debug_mse_alignment.py
   run_gpu_pipeline.sh
 src/harrier_distill/
-  config.py data.py model.py eval.py debug.py distributed.py text.py
+  config.py data.py model.py eval.py sts.py debug.py distributed.py text.py
 ```

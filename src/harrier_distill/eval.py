@@ -7,6 +7,7 @@ from typing import Any
 import mteb
 
 from harrier_distill.model import load_sentence_transformer
+from harrier_distill.sts import evaluate_sts_local
 
 STS_SUITES: dict[str, list[str]] = {
     "en": ["STSBenchmark"],
@@ -52,6 +53,26 @@ def _extract_main_score(result) -> float | None:
     return split_scores[0].get("main_score")
 
 
+def get_local_task_paths(
+    task_names: list[str],
+    sts_paths: dict[str, Path],
+) -> dict[str, Path]:
+    missing = [name for name in task_names if name not in sts_paths]
+    if missing:
+        raise ValueError(
+            f"No local STS parquet configured for tasks: {', '.join(missing)}. "
+            "Run scripts/01_download_sts_local.py and set paths.sts_data_root."
+        )
+    selected = {name: sts_paths[name] for name in task_names}
+    missing_files = [name for name, path in selected.items() if not path.exists()]
+    if missing_files:
+        paths_str = ", ".join(str(selected[name]) for name in missing_files)
+        raise FileNotFoundError(
+            f"Local STS parquet missing for {', '.join(missing_files)}: {paths_str}"
+        )
+    return selected
+
+
 def evaluate_sts(
     model_path: str | Path,
     *,
@@ -59,9 +80,23 @@ def evaluate_sts(
     prompt_name: str = "sts_query",
     batch_size: int = 64,
     output_dir: str | Path | None = None,
+    use_local_sts: bool = False,
+    local_task_paths: dict[str, Path] | None = None,
+    max_length: int = 512,
 ) -> dict[str, Any]:
-    """Run MTEB STS tasks and return per-task Spearman scores."""
+    """Run STS tasks via MTEB or local parquet and return per-task Spearman scores."""
     task_names = tasks or ["STSBenchmark", "KorSTS"]
+    if use_local_sts:
+        if local_task_paths is None:
+            raise ValueError("local_task_paths is required when use_local_sts=True")
+        return evaluate_sts_local(
+            model_path,
+            task_paths=get_local_task_paths(task_names, local_task_paths),
+            prompt_name=prompt_name,
+            batch_size=batch_size,
+            max_length=max_length,
+        )
+
     try:
         mteb_tasks = mteb.get_tasks(tasks=task_names)
     except Exception:
@@ -77,7 +112,7 @@ def evaluate_sts(
         encode_kwargs={"batch_size": batch_size, "show_progress_bar": True},
     )
 
-    summary: dict[str, Any] = {"model_path": str(model_path), "tasks": {}}
+    summary: dict[str, Any] = {"model_path": str(model_path), "backend": "mteb", "tasks": {}}
     for result in results:
         task_name = result.task_name
         summary["tasks"][task_name] = {
@@ -126,9 +161,20 @@ def compare_sts(
     prompt_name: str = "sts_query",
     batch_size: int = 64,
     output_dir: str | Path | None = None,
+    use_local_sts: bool = False,
+    local_task_paths: dict[str, Path] | None = None,
+    max_length: int = 512,
 ) -> dict[str, Any]:
     """Evaluate teacher and student (and optional baseline) on the same STS suite."""
     task_names = get_tasks_for_suite(suite, tasks=tasks)
+    if use_local_sts:
+        unsupported = [name for name in task_names if name not in (local_task_paths or {})]
+        if unsupported:
+            raise ValueError(
+                f"Local STS mode does not support tasks: {', '.join(unsupported)}. "
+                "Use suite en/ko/multilingual, or run without --local-sts for extended."
+            )
+
     output_root = Path(output_dir) if output_dir else None
     mteb_root = output_root / "mteb_runs" if output_root else None
 
@@ -141,13 +187,16 @@ def compare_sts(
 
     summaries: dict[str, dict[str, Any]] = {}
     for label, model_path in models:
-        model_mteb_dir = mteb_root / label if mteb_root else None
+        model_mteb_dir = mteb_root / label if mteb_root and not use_local_sts else None
         summaries[label] = evaluate_sts(
             model_path,
             tasks=task_names,
             prompt_name=prompt_name,
             batch_size=batch_size,
             output_dir=model_mteb_dir,
+            use_local_sts=use_local_sts,
+            local_task_paths=local_task_paths,
+            max_length=max_length,
         )
 
     comparison_rows: list[dict[str, Any]] = []
@@ -171,6 +220,7 @@ def compare_sts(
         )
 
     return {
+        "backend": "local" if use_local_sts else "mteb",
         "suite": suite,
         "tasks": task_names,
         "teacher_path": str(teacher_path),

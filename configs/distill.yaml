@@ -35,6 +35,16 @@ eval:
     - KorSTS
   prompt_name: sts_query
   batch_size: 64
+  compare_teacher: "microsoft/harrier-oss-v1-270m"
+  suites:
+    en: [STSBenchmark]
+    ko: [KorSTS]
+    multilingual: [STSBenchmark, KorSTS]
+    extended: [STSBenchmark, KorSTS, STS22.v2, STSBenchmarkMultilingualSTS]
+
+debug:
+  sample_size: 5000
+  seed: 42
 
 # Future phase: retrieval distillation (not used in v1 scripts)
 phases:

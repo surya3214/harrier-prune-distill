@@ -124,6 +124,59 @@ python scripts/04_eval_sts.py --config configs/distill.yaml \
 
 Results are saved under `{output_dir}/eval/`.
 
+## Step 7 — Compare teacher vs student (recommended)
+
+Side-by-side STS evaluation of the teacher and your distilled checkpoint:
+
+```bash
+python scripts/05_compare_sts.py --config configs/distill.yaml \
+  --student /mnt/data/harrier-distill/output/checkpoint_final \
+  --suite multilingual
+
+# EN-only STS
+python scripts/05_compare_sts.py --config configs/distill.yaml \
+  --student /mnt/data/harrier-distill/output/checkpoint_final \
+  --suite en
+
+# Include pruned baseline for a 3-way table
+python scripts/05_compare_sts.py --config configs/distill.yaml \
+  --student /mnt/data/harrier-distill/output/checkpoint_final \
+  --baseline /models/harrier-12l-pruned \
+  --suite multilingual
+```
+
+Suites: `en` (STSBenchmark), `ko` (KorSTS), `multilingual` (both), `extended` (adds STS22.v2 + STSBenchmarkMultilingualSTS).
+
+## Step 8 — Debug MSE vs STS gap
+
+If training `avg_loss` is low but STS lags the teacher, run alignment diagnostics:
+
+```bash
+python scripts/06_debug_mse_alignment.py --config configs/distill.yaml \
+  --student /mnt/data/harrier-distill/output/checkpoint_final \
+  --lang en
+
+python scripts/06_debug_mse_alignment.py --config configs/distill.yaml \
+  --student /mnt/data/harrier-distill/output/checkpoint_final \
+  --lang ko
+```
+
+The report checks:
+
+1. **Cache alignment** — teacher re-encode matches cached parquet embeddings (catches prompt/dtype bugs)
+2. **Pointwise alignment** — MSE, cosine, angular error, per-dimension correlation on sampled training texts
+3. **Pairwise STS proxy** — Spearman on STSBenchmark validation without a full MTEB run
+4. **Checklist** — pass/fail hints for common failure modes
+
+Interpretation:
+
+| Symptom | Likely cause |
+|---------|--------------|
+| High cache MSE | Re-generate embeddings or fix prompt/max_length mismatch |
+| Low pointwise MSE but low pairwise STS | Geometry distortion — add cosine loss or contrastive phase |
+| Poor STS vs pruned baseline | Distillation may not be helping; check init checkpoint |
+| Low dim_corr_min | Dimension collapse in student |
+
 ## Time estimates (4x H100, ~4.5M)
 
 | Stage | Wall clock |
@@ -163,7 +216,9 @@ scripts/
   02_generate_teacher_embeddings.py
   03_train_distill_mse.py
   04_eval_sts.py
+  05_compare_sts.py
+  06_debug_mse_alignment.py
   run_gpu_pipeline.sh
 src/harrier_distill/
-  config.py data.py model.py eval.py distributed.py text.py
+  config.py data.py model.py eval.py debug.py distributed.py text.py
 ```

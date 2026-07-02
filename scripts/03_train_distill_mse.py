@@ -23,7 +23,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 from harrier_distill.config import get_resolved_paths, load_distill_config, require_path
 from harrier_distill.data import CachedEmbeddingDataset, ensure_dir
 from harrier_distill.distributed import barrier, cleanup_distributed, init_distributed, is_main_process
-from harrier_distill.model import encode_with_prompt
+from harrier_distill.model import encode_with_prompt, get_model_dtype_kwargs
 
 
 def parse_args() -> argparse.Namespace:
@@ -113,7 +113,7 @@ def main() -> None:
 
     model = SentenceTransformer(
         str(init_path),
-        model_kwargs={"dtype": torch.bfloat16 if torch.cuda.is_available() else torch.float32},
+        model_kwargs=get_model_dtype_kwargs(),
         trust_remote_code=True,
     )
     model = model.to(device)

@@ -28,6 +28,7 @@ from harrier_distill.data import (
     write_rank_done_marker,
 )
 from harrier_distill.distributed import cleanup_distributed, init_distributed, is_main_process, release_gpu_resources
+from harrier_distill.model import get_model_dtype_kwargs
 
 
 def parse_args() -> argparse.Namespace:
@@ -151,7 +152,7 @@ def main() -> None:
         print(f"Loading teacher model: {teacher_path}")
     model = SentenceTransformer(
         str(teacher_path),
-        model_kwargs={"dtype": torch.bfloat16},
+        model_kwargs=get_model_dtype_kwargs(prefer_bf16=True),
         trust_remote_code=True,
     )
     model = model.to(device)

@@ -7,16 +7,30 @@ import torch.nn.functional as F
 from sentence_transformers import SentenceTransformer
 
 
+def get_model_dtype_kwargs(*, prefer_bf16: bool | None = None) -> dict[str, torch.dtype]:
+    """Return transformers-safe dtype kwargs for SentenceTransformer model_kwargs."""
+    import transformers
+
+    use_bf16 = torch.cuda.is_available() if prefer_bf16 is None else prefer_bf16
+    dtype = torch.bfloat16 if use_bf16 else torch.float32
+    major = int(transformers.__version__.split(".", maxsplit=1)[0])
+    # transformers 4.x only accepts torch_dtype in from_pretrained; passing dtype
+    # leaks into Gemma3TextModel.__init__ and raises TypeError.
+    if major >= 5:
+        return {"dtype": dtype}
+    return {"torch_dtype": dtype}
+
+
 def load_sentence_transformer(
     model_path: str | Path,
     *,
     device: torch.device | str | None = None,
     trust_remote_code: bool = True,
+    prefer_bf16: bool | None = None,
 ) -> SentenceTransformer:
-    model_kwargs = {"dtype": torch.bfloat16 if torch.cuda.is_available() else torch.float32}
     model = SentenceTransformer(
         str(model_path),
-        model_kwargs=model_kwargs,
+        model_kwargs=get_model_dtype_kwargs(prefer_bf16=prefer_bf16),
         trust_remote_code=trust_remote_code,
     )
     if device is not None:

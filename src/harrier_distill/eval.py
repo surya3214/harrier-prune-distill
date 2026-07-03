@@ -21,6 +21,229 @@ STS_SUITES: dict[str, list[str]] = {
     ],
 }
 
+RETRIEVAL_SUITES: dict[str, list[str]] = {
+    "en": ["MSMARCO"],
+    "ko": ["MIRACLRetrieval"],
+    "en_ko": ["MSMARCO", "MIRACLRetrieval"],
+}
+
+
+def get_retrieval_tasks_for_suite(suite: str, *, tasks: list[str] | None = None) -> list[str]:
+    if tasks:
+        return tasks
+    if suite not in RETRIEVAL_SUITES:
+        available = ", ".join(sorted(RETRIEVAL_SUITES))
+        raise ValueError(f"Unknown retrieval suite '{suite}'. Available: {available}")
+    return list(RETRIEVAL_SUITES[suite])
+
+
+def _apply_retrieval_prompts(model, task_names: list[str], prompt_name: str) -> None:
+    if not prompt_name or not getattr(model, "prompts", None):
+        return
+    prompts = dict(model.prompts)
+    if prompt_name not in prompts:
+        return
+    retrieval_instruction = prompts[prompt_name]
+    for task_name in task_names:
+        prompts[task_name] = retrieval_instruction
+    prompts["Retrieval"] = retrieval_instruction
+    prompts["Query"] = retrieval_instruction
+    model.prompts = prompts
+
+
+def _miracl_eval_subsets(languages_cfg: dict[str, Any] | list[str] | None) -> list[str] | None:
+    if languages_cfg is None:
+        return ["en", "ko"]
+    if isinstance(languages_cfg, list):
+        mapping = {
+            "eng-Latn": "en",
+            "kor-Kore": "ko",
+            "en": "en",
+            "ko": "ko",
+        }
+        return [mapping.get(lang, lang) for lang in languages_cfg]
+    miracl_langs = languages_cfg.get("MIRACLRetrieval")
+    if miracl_langs is None:
+        return ["en", "ko"]
+    mapping = {"eng-Latn": "en", "kor-Kore": "ko", "en": "en", "ko": "ko"}
+    return [mapping.get(lang, lang) for lang in miracl_langs]
+
+
+def evaluate_retrieval(
+    model_path: str | Path,
+    *,
+    tasks: list[str] | None = None,
+    query_prompt: str = "web_search_query",
+    batch_size: int = 64,
+    output_dir: str | Path | None = None,
+    miracl_subsets: list[str] | None = None,
+) -> dict[str, Any]:
+    """Run retrieval tasks via MTEB and return per-task nDCG@10 (main_score)."""
+    task_names = tasks or ["MSMARCO", "MIRACLRetrieval"]
+    mteb_tasks = mteb.get_tasks(tasks=task_names)
+
+    model = load_sentence_transformer(model_path)
+    _apply_retrieval_prompts(model, task_names, query_prompt)
+
+    evaluation = mteb.MTEB(tasks=mteb_tasks)
+    encode_kwargs = {"batch_size": batch_size, "show_progress_bar": True, "prompt_name": query_prompt}
+    eval_subsets = miracl_subsets if miracl_subsets is not None else ["en", "ko"]
+
+    results = evaluation.run(
+        model,
+        output_folder=str(output_dir) if output_dir else None,
+        encode_kwargs=encode_kwargs,
+        eval_subsets=eval_subsets if "MIRACLRetrieval" in task_names else None,
+    )
+
+    summary: dict[str, Any] = {
+        "model_path": str(model_path),
+        "backend": "mteb",
+        "query_prompt": query_prompt,
+        "tasks": {},
+    }
+    for result in results:
+        task_name = result.task_name
+        summary["tasks"][task_name] = {
+            "main_score": _extract_main_score(result),
+            "scores": result.scores,
+            "hf_subset": getattr(result, "hf_subset", None),
+            "languages": getattr(result, "languages", None),
+        }
+    return summary
+
+
+def compare_retrieval(
+    *,
+    teacher_path: str | Path,
+    student_path: str | Path,
+    baseline_path: str | Path | None = None,
+    suite: str = "en_ko",
+    tasks: list[str] | None = None,
+    query_prompt: str = "web_search_query",
+    batch_size: int = 64,
+    output_dir: str | Path | None = None,
+    miracl_subsets: list[str] | None = None,
+) -> dict[str, Any]:
+    """Evaluate teacher and student (and optional baseline) on retrieval tasks."""
+    task_names = get_retrieval_tasks_for_suite(suite, tasks=tasks)
+    output_root = Path(output_dir) if output_dir else None
+    mteb_root = output_root / "mteb_runs" if output_root else None
+
+    models: list[tuple[str, str | Path]] = [
+        ("teacher", teacher_path),
+        ("student", student_path),
+    ]
+    if baseline_path is not None:
+        models.append(("baseline", baseline_path))
+
+    summaries: dict[str, dict[str, Any]] = {}
+    for label, model_path in models:
+        model_mteb_dir = mteb_root / label if mteb_root else None
+        summaries[label] = evaluate_retrieval(
+            model_path,
+            tasks=task_names,
+            query_prompt=query_prompt,
+            batch_size=batch_size,
+            output_dir=model_mteb_dir,
+            miracl_subsets=miracl_subsets,
+        )
+
+    comparison_rows: list[dict[str, Any]] = []
+    for task_name in task_names:
+        scores = {
+            label: summaries[label]["tasks"].get(task_name, {}).get("main_score")
+            for label in summaries
+        }
+        comparison_rows.append(_build_comparison_row(task_name, scores))
+
+    macro: dict[str, Any] = {
+        "teacher": _macro_average(comparison_rows, "teacher"),
+        "student": _macro_average(comparison_rows, "student"),
+    }
+    if baseline_path is not None:
+        macro["baseline"] = _macro_average(comparison_rows, "baseline")
+    if macro["teacher"] is not None and macro["student"] is not None:
+        macro["delta"] = macro["student"] - macro["teacher"]
+        macro["pct_of_teacher"] = (
+            macro["student"] / macro["teacher"] * 100.0 if macro["teacher"] != 0 else None
+        )
+
+    return {
+        "backend": "mteb",
+        "suite": suite,
+        "tasks": task_names,
+        "teacher_path": str(teacher_path),
+        "student_path": str(student_path),
+        "baseline_path": str(baseline_path) if baseline_path else None,
+        "summaries": summaries,
+        "comparison": comparison_rows,
+        "macro": macro,
+    }
+
+
+def print_retrieval_summary(summary: dict[str, Any]) -> None:
+    print(f"\nModel: {summary['model_path']}")
+    for task_name, payload in summary.get("tasks", {}).items():
+        score = payload.get("main_score")
+        score_str = f"{score:.4f}" if score is not None else "n/a"
+        subset = payload.get("hf_subset")
+        suffix = f" ({subset})" if subset else ""
+        print(f"  {task_name}{suffix}: {score_str}")
+
+
+def print_retrieval_compare_summary(comparison: dict[str, Any]) -> None:
+    has_baseline = comparison.get("baseline_path") is not None
+    print(f"\nRetrieval comparison (suite={comparison['suite']})")
+    print(f"  Teacher: {comparison['teacher_path']}")
+    print(f"  Student: {comparison['student_path']}")
+    if has_baseline:
+        print(f"  Baseline: {comparison['baseline_path']}")
+
+    if has_baseline:
+        header = f"{'Task':<28} {'Teacher':>9} {'Student':>9} {'Baseline':>9} {'Delta':>9} {'%Teacher':>9}"
+    else:
+        header = f"{'Task':<28} {'Teacher':>9} {'Student':>9} {'Delta':>9} {'%Teacher':>9}"
+    print(header)
+    print("-" * len(header))
+
+    for row in comparison["comparison"]:
+        teacher = row.get("teacher")
+        student = row.get("student")
+        teacher_str = f"{teacher:.4f}" if teacher is not None else "n/a"
+        student_str = f"{student:.4f}" if student is not None else "n/a"
+        delta = row.get("delta")
+        delta_str = f"{delta:+.4f}" if delta is not None else "n/a"
+        pct = row.get("pct_of_teacher")
+        pct_str = f"{pct:.1f}%" if pct is not None else "n/a"
+
+        if has_baseline:
+            baseline = row.get("baseline")
+            baseline_str = f"{baseline:.4f}" if baseline is not None else "n/a"
+            print(
+                f"{row['task']:<28} {teacher_str:>9} {student_str:>9} "
+                f"{baseline_str:>9} {delta_str:>9} {pct_str:>9}"
+            )
+        else:
+            print(
+                f"{row['task']:<28} {teacher_str:>9} {student_str:>9} "
+                f"{delta_str:>9} {pct_str:>9}"
+            )
+
+    macro = comparison["macro"]
+    teacher = macro.get("teacher")
+    student = macro.get("student")
+    teacher_str = f"{teacher:.4f}" if teacher is not None else "n/a"
+    student_str = f"{student:.4f}" if student is not None else "n/a"
+    delta = macro.get("delta")
+    delta_str = f"{delta:+.4f}" if delta is not None else "n/a"
+    pct = macro.get("pct_of_teacher")
+    pct_str = f"{pct:.1f}%" if pct is not None else "n/a"
+    print(
+        f"{'MACRO AVG':<28} {teacher_str:>9} {student_str:>9} "
+        f"{delta_str:>9} {pct_str:>9}"
+    )
+
 
 def get_tasks_for_suite(suite: str, *, tasks: list[str] | None = None) -> list[str]:
     if tasks:

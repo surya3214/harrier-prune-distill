@@ -88,3 +88,120 @@ def encode_with_prompt(
     outputs = model(features)
     embeddings = outputs["sentence_embedding"]
     return F.normalize(embeddings, p=2, dim=1)
+
+
+def encode_texts(
+    model: SentenceTransformer,
+    texts: list[str],
+    *,
+    device: torch.device,
+    max_length: int,
+    prompt_name: str | None = None,
+) -> torch.Tensor:
+    """Differentiable encode with optional prompt (None = no prompt on documents)."""
+    if prompt_name:
+        return encode_with_prompt(
+            model,
+            texts,
+            prompt_name=prompt_name,
+            device=device,
+            max_length=max_length,
+        )
+
+    features = model.tokenize(texts)
+    features = _features_to_device(features, device, max_length)
+    outputs = model(features)
+    embeddings = outputs["sentence_embedding"]
+    return F.normalize(embeddings, p=2, dim=1)
+
+
+def encode_batch_by_role(
+    model: SentenceTransformer,
+    texts: list[str],
+    roles: list[str],
+    *,
+    query_prompt: str,
+    doc_prompt: str | None,
+    device: torch.device,
+    max_length: int,
+    batch_size: int,
+) -> "np.ndarray":
+    """Inference-mode batch encode with role-specific prompts."""
+    import numpy as np
+
+    embeddings: list[np.ndarray] = []
+    for start in range(0, len(texts), batch_size):
+        batch_texts = texts[start : start + batch_size]
+        batch_roles = roles[start : start + batch_size]
+        query_indices = [idx for idx, role in enumerate(batch_roles) if role == "query"]
+        doc_indices = [idx for idx, role in enumerate(batch_roles) if role != "query"]
+
+        batch_emb = np.zeros((len(batch_texts), model.get_sentence_embedding_dimension()), dtype=np.float32)
+        if query_indices:
+            query_texts = [batch_texts[idx] for idx in query_indices]
+            query_emb = model.encode(
+                query_texts,
+                prompt_name=query_prompt,
+                batch_size=batch_size,
+                normalize_embeddings=True,
+                convert_to_numpy=True,
+                show_progress_bar=False,
+            )
+            for local_idx, emb in zip(query_indices, np.asarray(query_emb)):
+                batch_emb[local_idx] = emb
+
+        if doc_indices:
+            doc_texts = [batch_texts[idx] for idx in doc_indices]
+            encode_kwargs = {
+                "batch_size": batch_size,
+                "normalize_embeddings": True,
+                "convert_to_numpy": True,
+                "show_progress_bar": False,
+            }
+            if doc_prompt:
+                encode_kwargs["prompt_name"] = doc_prompt
+            doc_emb = model.encode(doc_texts, **encode_kwargs)
+            for local_idx, emb in zip(doc_indices, np.asarray(doc_emb)):
+                batch_emb[local_idx] = emb
+
+        embeddings.append(batch_emb)
+
+    return np.vstack(embeddings) if embeddings else np.zeros((0, model.get_sentence_embedding_dimension()), dtype=np.float32)
+
+
+def encode_training_batch_by_role(
+    model: SentenceTransformer,
+    texts: list[str],
+    roles: list[str] | None,
+    *,
+    query_prompt: str,
+    doc_prompt: str | None,
+    default_prompt: str,
+    device: torch.device,
+    max_length: int,
+) -> torch.Tensor:
+    """Differentiable encode for mixed query/doc batches during distillation."""
+    if not roles:
+        return encode_with_prompt(
+            model,
+            texts,
+            prompt_name=default_prompt,
+            device=device,
+            max_length=max_length,
+        )
+
+    outputs: list[torch.Tensor] = []
+    for text, role in zip(texts, roles):
+        prompt_name = query_prompt if role == "query" else doc_prompt
+        if prompt_name:
+            emb = encode_with_prompt(
+                model,
+                [text],
+                prompt_name=prompt_name,
+                device=device,
+                max_length=max_length,
+            )
+        else:
+            emb = encode_texts(model, [text], device=device, max_length=max_length, prompt_name=None)
+        outputs.append(emb)
+    return torch.cat(outputs, dim=0)

@@ -212,15 +212,63 @@ Interpretation:
 | Train EN + KO (1 epoch each) | ~1–1.5 h |
 | Eval | ~15–30 min |
 
-## Extending to retrieval (phase 2)
+## Retrieval distillation (phase 2)
 
-v1 optimizes STS with `sts_query`. To recover retrieval MTEB later:
+After STS distillation (`checkpoint_final`), recover retrieval with hard-negative corpora:
 
-1. Add MS-MARCO (or BEIR) to a new `retrieval` phase in config
-2. Cache teacher embeddings with `web_search_query` on queries and **no prompt** on passages
-3. Resume from `checkpoint_final` and run a second MSE training pass
+```text
+Local (internet)                         GPU (offline)
+────────────────                         ─────────────
+01_download_retrieval_local.py  →        rsync retrieval/ corpora
+                                         02_generate_teacher_embeddings.py --phase retrieval
+                                         03_train_distill_mse.py --phase retrieval
+                                         04_eval_retrieval.py / 05_compare_retrieval.py
+```
 
-See `phases.retrieval` stub in [`configs/distill.yaml`](configs/distill.yaml).
+### Datasets (EN + KO first)
+
+| Lang | Source | HF dataset |
+|------|--------|------------|
+| EN | MS MARCO hard-negative triplets | `sentence-transformers/msmarco-co-condenser-margin-mse-sym-mnrl-mean-v1` |
+| KO | MIRACL hard negatives (`kor`) | `datalama/miracl-hard-negatives` |
+
+Config: [`configs/retrieval_datasets.yaml`](configs/retrieval_datasets.yaml). Add languages by extending `languages:` and a new lang block (same MIRACL dataset, different `qrels_config`).
+
+**Pilot run** (mini MIRACL + 50k MS MARCO):
+
+```bash
+python scripts/01_download_retrieval_local.py --config configs/distill.yaml --pilot
+```
+
+**Full download:**
+
+```bash
+python scripts/01_download_retrieval_local.py --config configs/distill.yaml
+```
+
+Outputs `{local_data_root}/retrieval/{en,ko}/corpus.parquet` with `role` column (`query` | `doc`).
+
+### GPU training
+
+```bash
+bash scripts/run_gpu_retrieval_pipeline.sh
+```
+
+- **Prompts:** `web_search_query` on queries, no prompt on documents
+- **Init:** EN pass resumes from STS `checkpoint_final`; KO pass resumes `retrieval/checkpoint_en`
+- **Checkpoints:** `{output_dir}/retrieval/checkpoint_en` → `checkpoint_final`
+
+### Retrieval eval
+
+```bash
+python scripts/04_eval_retrieval.py --config configs/distill.yaml \
+  --model /path/to/retrieval/checkpoint_final --suite en_ko
+
+python scripts/05_compare_retrieval.py --config configs/distill.yaml \
+  --student /path/to/retrieval/checkpoint_final --suite en_ko
+```
+
+Tasks: MTEB `MSMARCO` (EN) + `MIRACLRetrieval` (`en`, `ko` subsets).
 
 ## Fallback ladder
 
@@ -235,17 +283,22 @@ See `phases.retrieval` stub in [`configs/distill.yaml`](configs/distill.yaml).
 
 ```text
 configs/
-  distill.yaml          # paths + training hyperparams (you populate)
-  datasets.yaml         # HF dataset definitions
+  distill.yaml              # paths + training hyperparams (you populate)
+  datasets.yaml             # STS phase HF dataset definitions
+  retrieval_datasets.yaml   # retrieval phase HF dataset definitions (EN/KO)
 scripts/
   01_download_local.py
+  01_download_retrieval_local.py
   01_download_sts_local.py
   02_generate_teacher_embeddings.py
   03_train_distill_mse.py
   04_eval_sts.py
+  04_eval_retrieval.py
   05_compare_sts.py
+  05_compare_retrieval.py
   06_debug_mse_alignment.py
   run_gpu_pipeline.sh
+  run_gpu_retrieval_pipeline.sh
 src/harrier_distill/
-  config.py data.py model.py eval.py sts.py debug.py distributed.py text.py
+  config.py data.py model.py eval.py retrieval.py sts.py debug.py distributed.py text.py
 ```

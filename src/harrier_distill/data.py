@@ -101,9 +101,15 @@ def load_corpus_table(path: Path) -> pa.Table:
 class CachedEmbeddingDataset:
     """Dataset of text + precomputed teacher embeddings stored in Parquet."""
 
-    def __init__(self, parquet_path: Path):
-        table = pq.read_table(parquet_path, columns=["text", "embedding"])
+    def __init__(self, parquet_path: Path, *, role_column: str | None = "role"):
+        columns = ["text", "embedding"]
+        table = pq.read_table(parquet_path)
+        available = set(table.column_names)
+        if role_column and role_column in available:
+            columns.append(role_column)
+        table = table.select(columns)
         self.texts = table.column("text").to_pylist()
+        self.roles = table.column(role_column).to_pylist() if role_column and role_column in columns else None
 
         embedding_col = table.column("embedding")
         if pa.types.is_fixed_size_list(embedding_col.type):
@@ -126,10 +132,13 @@ class CachedEmbeddingDataset:
     def __getitem__(self, idx: int) -> dict[str, Any]:
         import torch
 
-        return {
+        item: dict[str, Any] = {
             "text": self.texts[idx],
             "teacher_embedding": torch.from_numpy(self.embeddings[idx]),
         }
+        if self.roles is not None:
+            item["role"] = self.roles[idx]
+        return item
 
 
 def corpus_row(

@@ -1,0 +1,97 @@
+# Retrieval distillation corpora for phase 2 (EN + KO first, extensible).
+# Download with scripts/01_download_retrieval_local.py on local infra (internet).
+
+languages:
+  - en
+  - ko
+
+# Set pilot: true for a fast smoke run before full scale.
+pilot:
+  enabled: false
+  en_triplets: 50000
+  ko_queries: 100
+
+en:
+  target_triplets: 500000
+  sources:
+    - name: msmarco_hard_triplets
+      hf_path: sentence-transformers/msmarco-co-condenser-margin-mse-sym-mnrl-mean-v1
+      config: triplet
+      split: train
+      streaming: true
+      query_column: query
+      positive_column: positive
+      negative_column: negative
+      negatives_per_triplet: 1
+
+ko:
+  target_triplets: 200000
+  sources:
+    - name: miracl_hard_negatives
+      hf_path: datalama/miracl-hard-negatives
+      # Uses qrels (score 1 = positive, 0 = hard negative) joined with queries/corpus.
+      qrels_config: ko
+      qrels_split: dev
+      queries_config: queries-ko
+      queries_split: queries
+      corpus_config: corpus-ko
+      corpus_split: corpus
+      query_id_column: query-id
+      corpus_id_column: corpus-id
+      qrels_corpus_id_column: corpus-id
+      queries_id_column: _id
+      corpus_row_id_column: _id
+      score_column: score
+      positives_per_query: 1
+      negatives_per_query: 3
+
+# Pilot overrides (datalama mini + smaller MS MARCO sample)
+pilot_sources:
+  en:
+    target_triplets: 50000
+    sources:
+      - name: msmarco_hard_triplets
+        hf_path: sentence-transformers/msmarco-co-condenser-margin-mse-sym-mnrl-mean-v1
+        config: triplet
+        split: train
+        streaming: true
+        query_column: query
+        positive_column: positive
+        negative_column: negative
+        negatives_per_triplet: 1
+  ko:
+    target_triplets: 100
+    sources:
+      - name: miracl_hard_negatives_mini
+        hf_path: datalama/miracl-hard-negatives-mini
+        qrels_config: ko-qrels
+        qrels_split: test
+        queries_config: ko-queries
+        queries_split: queries
+        corpus_config: ko-corpus
+        corpus_split: corpus
+        queries_id_column: id
+        corpus_row_id_column: id
+        query_id_column: query-id
+        qrels_corpus_id_column: corpus-id
+        score_column: score
+        positives_per_query: 1
+        negatives_per_query: 3
+
+# Future languages: add a block mirroring `ko` with the appropriate MIRACL lang code.
+# Example:
+# ja:
+#   target_triplets: 100000
+#   sources:
+#     - name: miracl_hard_negatives
+#       hf_path: datalama/miracl-hard-negatives
+#       qrels_config: ja
+#       ...
+
+dedupe:
+  normalize_whitespace: true
+  lowercase_for_dedupe: false
+
+output:
+  format: parquet
+  shard_size: 50000

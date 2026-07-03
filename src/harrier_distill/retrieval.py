@@ -221,8 +221,13 @@ def collect_retrieval_rows(
         else:
             raise ValueError(f"Unknown retrieval source '{name}' for language '{lang}'")
 
+        remaining_global = max(target_triplets - triplet_idx, 0)
+        source_limit = int(source_cfg.get("target_triplets", remaining_global))
+        source_limit = min(source_limit, remaining_global)
+        source_added = 0
+
         for query, positive, negatives in triplet_iter:
-            if triplet_idx >= target_triplets:
+            if triplet_idx >= target_triplets or source_added >= source_limit:
                 break
             if not dedupe.add_if_new(query):
                 continue
@@ -240,6 +245,7 @@ def collect_retrieval_rows(
                 continue
             rows.extend(expanded)
             triplet_idx += 1
+            source_added += 1
 
         if triplet_idx >= target_triplets:
             break

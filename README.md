@@ -235,7 +235,7 @@ Local (internet)                         GPU (offline)
 
 | Lang | Source | HF dataset |
 |------|--------|------------|
-| EN | MS MARCO hard-negative triplets | `sentence-transformers/msmarco-co-condenser-margin-mse-sym-mnrl-mean-v1` |
+| EN | MIRACL EN hard negatives (supplement) + MS MARCO triplets (bulk) | `datalama/miracl-hard-negatives` (`en`) + `sentence-transformers/msmarco-co-condenser-margin-mse-sym-mnrl-mean-v1` |
 | KO | MIRACL hard negatives (`kor`) | `datalama/miracl-hard-negatives` |
 
 Config: [`configs/retrieval_datasets.yaml`](configs/retrieval_datasets.yaml). Add languages by extending `languages:` and a new lang block (same MIRACL dataset, different `qrels_config`).

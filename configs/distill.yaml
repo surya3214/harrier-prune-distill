@@ -49,7 +49,9 @@ phases:
     num_epochs_retrieval_en: 1
     num_epochs_retrieval_ko: 1
     datasets:
-      en: msmarco_hard_triplets
+      en:
+        - miracl_hard_negatives_en
+        - msmarco_hard_triplets
       ko: miracl_hard_negatives
 
 eval:

@@ -12,9 +12,27 @@ pilot:
   ko_queries: 100
 
 en:
-  target_triplets: 500000
+  # MIRACL EN supplement (~799 dev triplets) + MS MARCO bulk (500k)
+  target_triplets: 500800
   sources:
+    - name: miracl_hard_negatives_en
+      target_triplets: 10000
+      hf_path: datalama/miracl-hard-negatives
+      qrels_config: en
+      qrels_split: dev
+      queries_config: queries-en
+      queries_split: queries
+      corpus_config: corpus-en
+      corpus_split: corpus
+      query_id_column: query-id
+      qrels_corpus_id_column: corpus-id
+      queries_id_column: _id
+      corpus_row_id_column: _id
+      score_column: score
+      positives_per_query: 1
+      negatives_per_query: 3
     - name: msmarco_hard_triplets
+      target_triplets: 500000
       hf_path: sentence-transformers/msmarco-co-condenser-margin-mse-sym-mnrl-mean-v1
       config: triplet
       split: train
@@ -48,9 +66,26 @@ ko:
 # Pilot overrides (datalama mini + smaller MS MARCO sample)
 pilot_sources:
   en:
-    target_triplets: 50000
+    target_triplets: 50100
     sources:
+      - name: miracl_hard_negatives_mini_en
+        target_triplets: 100
+        hf_path: datalama/miracl-hard-negatives-mini
+        qrels_config: en-qrels
+        qrels_split: test
+        queries_config: en-queries
+        queries_split: queries
+        corpus_config: en-corpus
+        corpus_split: corpus
+        queries_id_column: id
+        corpus_row_id_column: id
+        query_id_column: query-id
+        qrels_corpus_id_column: corpus-id
+        score_column: score
+        positives_per_query: 1
+        negatives_per_query: 3
       - name: msmarco_hard_triplets
+        target_triplets: 50000
         hf_path: sentence-transformers/msmarco-co-condenser-margin-mse-sym-mnrl-mean-v1
         config: triplet
         split: train

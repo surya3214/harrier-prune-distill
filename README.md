@@ -240,7 +240,7 @@ Local (internet)                         GPU (offline)
 
 Config: [`configs/retrieval_datasets.yaml`](configs/retrieval_datasets.yaml). Add languages by extending `languages:` and a new lang block (same MIRACL dataset, different `qrels_config`).
 
-**Pilot run** (mini MIRACL + 50k MS MARCO):
+**Pilot run** (mini MIRACL EN + mini MIRACL KO + 50k MS MARCO):
 
 ```bash
 python scripts/01_download_retrieval_local.py --config configs/distill.yaml --pilot

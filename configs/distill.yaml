@@ -12,13 +12,12 @@ paths:
   sts_data_root: ""            # e.g. {gpu_data_root}/sts
   en_sts_test: ""              # e.g. {sts_data_root}/en/stsbenchmark_test.parquet
   ko_sts_test: ""              # e.g. {sts_data_root}/ko/korsts_test.parquet
-  # Optional explicit retrieval paths (defaults under {data_root}/retrieval/...)
-  en_retrieval_corpus: ""
-  ko_retrieval_corpus: ""
-  en_retrieval_embeddings: ""
-  ko_retrieval_embeddings: ""
-  retrieval_checkpoint_en: ""
-  retrieval_checkpoint_final: ""
+  en_retrieval_corpus: ""      # e.g. {gpu_data_root}/retrieval/en/corpus.parquet
+  ko_retrieval_corpus: ""      # e.g. {gpu_data_root}/retrieval/ko/corpus.parquet
+  en_retrieval_embeddings: ""  # e.g. {output_dir}/retrieval/embeddings/en_embeddings.parquet
+  ko_retrieval_embeddings: ""  # e.g. {output_dir}/retrieval/embeddings/ko_embeddings.parquet
+  retrieval_checkpoint_en: ""  # e.g. {output_dir}/retrieval/checkpoint_en
+  retrieval_checkpoint_final: ""  # e.g. {output_dir}/retrieval/checkpoint_final
 
 data:
   pilot_samples_per_lang: 0    # 0 = disabled; use full_en_samples / full_ko_samples
@@ -39,7 +38,7 @@ training:
   seed: 42
   prompt_name: sts_query
 
-# Future phase: retrieval distillation (not used in v1 scripts)
+# Phase 2: retrieval distillation (see scripts/01_download_retrieval_local.py)
 phases:
   retrieval:
     query_prompt: web_search_query
@@ -50,7 +49,9 @@ phases:
     num_epochs_retrieval_en: 1
     num_epochs_retrieval_ko: 1
     datasets:
-      en: msmarco_hard_triplets
+      en:
+        - miracl_hard_negatives_en
+        - msmarco_hard_triplets
       ko: miracl_hard_negatives
 
 eval:

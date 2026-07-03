@@ -40,6 +40,74 @@ def load_sts_datasets_config(path: str | Path | None = None) -> dict[str, Any]:
     return load_yaml(config_path)
 
 
+def load_retrieval_datasets_config(path: str | Path | None = None) -> dict[str, Any]:
+    config_path = Path(path) if path else PROJECT_ROOT / "configs" / "retrieval_datasets.yaml"
+    return load_yaml(config_path)
+
+
+def get_phase_config(cfg: dict[str, Any], phase: str) -> dict[str, Any]:
+    phases = cfg.get("phases", {})
+    if phase not in phases:
+        raise KeyError(f"Unknown phase '{phase}'. Available: {', '.join(sorted(phases)) or '(none)'}")
+    return phases[phase]
+
+
+def resolve_retrieval_corpus_paths(cfg: dict[str, Any]) -> dict[str, Path]:
+    paths = get_resolved_paths(cfg)
+    root = paths.get("gpu_data_root") or paths.get("local_data_root")
+    if root is None or str(root) == "":
+        raise ValueError("Missing data root for retrieval paths")
+
+    explicit_en = paths.get("en_retrieval_corpus")
+    explicit_ko = paths.get("ko_retrieval_corpus")
+    resolved = {
+        "en": explicit_en if explicit_en is not None and str(explicit_en) != "" else (root / "retrieval" / "en" / "corpus.parquet"),
+        "ko": explicit_ko if explicit_ko is not None and str(explicit_ko) != "" else (root / "retrieval" / "ko" / "corpus.parquet"),
+    }
+    return {lang: Path(path).resolve() for lang, path in resolved.items()}
+
+
+def resolve_retrieval_embedding_paths(cfg: dict[str, Any]) -> dict[str, Path]:
+    paths = get_resolved_paths(cfg)
+    output_root = paths.get("output_dir")
+    if output_root is None or str(output_root) == "":
+        raise ValueError("Missing paths.output_dir for retrieval embedding paths")
+
+    explicit_en = paths.get("en_retrieval_embeddings")
+    explicit_ko = paths.get("ko_retrieval_embeddings")
+    resolved = {
+        "en": explicit_en
+        if explicit_en is not None and str(explicit_en) != ""
+        else (output_root / "retrieval" / "embeddings" / "en_embeddings.parquet"),
+        "ko": explicit_ko
+        if explicit_ko is not None and str(explicit_ko) != ""
+        else (output_root / "retrieval" / "embeddings" / "ko_embeddings.parquet"),
+    }
+    return {lang: Path(path).resolve() for lang, path in resolved.items()}
+
+
+def resolve_retrieval_checkpoint_paths(cfg: dict[str, Any]) -> dict[str, Path]:
+    paths = get_resolved_paths(cfg)
+    output_root = paths.get("output_dir")
+    if output_root is None or str(output_root) == "":
+        raise ValueError("Missing paths.output_dir for retrieval checkpoint paths")
+
+    explicit_en = paths.get("retrieval_checkpoint_en")
+    explicit_final = paths.get("retrieval_checkpoint_final")
+    return {
+        "en": Path(
+            explicit_en
+            if explicit_en is not None and str(explicit_en) != ""
+            else (output_root / "retrieval" / "checkpoint_en")
+        ).resolve(),
+        "final": Path(
+            explicit_final
+            if explicit_final is not None and str(explicit_final) != ""
+            else (output_root / "retrieval" / "checkpoint_final")
+        ).resolve(),
+    }
+
+
 def get_resolved_paths(cfg: dict[str, Any]) -> dict[str, Path | None]:
     paths = cfg.get("paths", {})
     return {key: resolve_path(value) for key, value in paths.items()}

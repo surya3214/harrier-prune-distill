@@ -7,7 +7,6 @@ import argparse
 import sys
 from pathlib import Path
 
-import numpy as np
 import pyarrow.parquet as pq
 import torch
 from sentence_transformers import SentenceTransformer
@@ -18,7 +17,14 @@ from tqdm import tqdm
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from harrier_distill.config import get_resolved_paths, load_distill_config, require_path
+from harrier_distill.config import (
+    get_phase_config,
+    get_resolved_paths,
+    load_distill_config,
+    require_path,
+    resolve_retrieval_corpus_paths,
+    resolve_retrieval_embedding_paths,
+)
 from harrier_distill.data import (
     append_corpus_shard,
     clear_rank_done_markers,
@@ -28,56 +34,45 @@ from harrier_distill.data import (
     write_rank_done_marker,
 )
 from harrier_distill.distributed import cleanup_distributed, init_distributed, is_main_process, release_gpu_resources
-from harrier_distill.model import get_model_dtype_kwargs
+from harrier_distill.model import encode_batch_by_role, get_model_dtype_kwargs
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default=str(PROJECT_ROOT / "configs" / "distill.yaml"))
     parser.add_argument("--lang", choices=["en", "ko"], required=True)
+    parser.add_argument("--phase", choices=["sts", "retrieval"], default="sts")
     parser.add_argument("--corpus", default=None, help="Override corpus parquet path")
     parser.add_argument("--output", default=None, help="Override output parquet path")
     return parser.parse_args()
 
 
 class CorpusDataset(Dataset):
-    def __init__(self, texts: list[str], ids: list[str], langs: list[str]):
+    def __init__(self, texts: list[str], ids: list[str], langs: list[str], roles: list[str] | None = None):
         self.texts = texts
         self.ids = ids
         self.langs = langs
+        self.roles = roles
 
     def __len__(self) -> int:
         return len(self.texts)
 
     def __getitem__(self, idx: int) -> dict:
-        return {"id": self.ids[idx], "text": self.texts[idx], "lang": self.langs[idx]}
+        item = {"id": self.ids[idx], "text": self.texts[idx], "lang": self.langs[idx]}
+        if self.roles is not None:
+            item["role"] = self.roles[idx]
+        return item
 
 
 def collate_rows(batch: list[dict]) -> dict:
-    return {
+    collated = {
         "id": [item["id"] for item in batch],
         "text": [item["text"] for item in batch],
         "lang": [item["lang"] for item in batch],
     }
-
-
-@torch.inference_mode()
-def encode_batch(
-    model: SentenceTransformer,
-    texts: list[str],
-    *,
-    prompt_name: str,
-    batch_size: int,
-) -> np.ndarray:
-    embeddings = model.encode(
-        texts,
-        prompt_name=prompt_name,
-        batch_size=batch_size,
-        normalize_embeddings=True,
-        convert_to_numpy=True,
-        show_progress_bar=False,
-    )
-    return np.asarray(embeddings, dtype=np.float32)
+    if "role" in batch[0]:
+        collated["role"] = [item["role"] for item in batch]
+    return collated
 
 
 def write_shard(rows: list[dict], shard_path: Path) -> None:
@@ -110,6 +105,21 @@ def finalize_shards(
     cleanup_distributed()
 
 
+def resolve_paths_for_phase(args: argparse.Namespace, cfg: dict, paths: dict) -> tuple[Path, Path]:
+    if args.phase == "retrieval":
+        corpus_paths = resolve_retrieval_corpus_paths(cfg)
+        embedding_paths = resolve_retrieval_embedding_paths(cfg)
+        corpus_path = Path(args.corpus) if args.corpus else corpus_paths[args.lang]
+        output_path = Path(args.output) if args.output else embedding_paths[args.lang]
+        return corpus_path, output_path
+
+    corpus_key = f"{args.lang}_corpus"
+    embeddings_key = f"{args.lang}_embeddings"
+    corpus_path = Path(args.corpus) if args.corpus else require_path(paths, corpus_key)
+    output_path = Path(args.output) if args.output else require_path(paths, embeddings_key)
+    return corpus_path, output_path
+
+
 def main() -> None:
     args = parse_args()
     rank, _local_rank, world_size, device = init_distributed()
@@ -119,24 +129,37 @@ def main() -> None:
     data_cfg = cfg.get("data", {})
     train_cfg = cfg.get("training", {})
 
-    corpus_key = f"{args.lang}_corpus"
-    embeddings_key = f"{args.lang}_embeddings"
-    corpus_path = Path(args.corpus) if args.corpus else require_path(paths, corpus_key)
-    output_path = Path(args.output) if args.output else require_path(paths, embeddings_key)
+    corpus_path, output_path = resolve_paths_for_phase(args, cfg, paths)
     teacher_path = require_path(paths, "teacher_model")
 
-    prompt_name = train_cfg.get("prompt_name", "sts_query")
+    if args.phase == "retrieval":
+        phase_cfg = get_phase_config(cfg, "retrieval")
+        query_prompt = phase_cfg.get("query_prompt", "web_search_query")
+        doc_prompt = phase_cfg.get("doc_prompt")
+        prompt_name = query_prompt
+    else:
+        query_prompt = train_cfg.get("prompt_name", "sts_query")
+        doc_prompt = None
+        prompt_name = query_prompt
+
     batch_size = int(train_cfg.get("embed_batch_size_per_gpu", 192))
     max_length = int(data_cfg.get("max_length", 512))
 
     if is_main_process(rank):
+        print(f"Phase: {args.phase}")
         print(f"Loading corpus: {corpus_path}")
-    table = pq.read_table(corpus_path, columns=["id", "text", "lang"])
+
+    columns = ["id", "text", "lang"]
+    schema_names = pq.read_schema(corpus_path).names
+    if args.phase == "retrieval" and "role" in schema_names:
+        columns.append("role")
+    table = pq.read_table(corpus_path, columns=columns)
     texts = table.column("text").to_pylist()
     ids = table.column("id").to_pylist()
     langs = table.column("lang").to_pylist()
+    roles = table.column("role").to_pylist() if "role" in columns else None
 
-    dataset = CorpusDataset(texts, ids, langs)
+    dataset = CorpusDataset(texts, ids, langs, roles)
     sampler = DistributedSampler(dataset, shuffle=False) if world_size > 1 else None
     loader = DataLoader(
         dataset,
@@ -150,6 +173,11 @@ def main() -> None:
 
     if is_main_process(rank):
         print(f"Loading teacher model: {teacher_path}")
+        if args.phase == "retrieval":
+            print(f"Query prompt: {query_prompt}; doc prompt: {doc_prompt or '(none)'}")
+        else:
+            print(f"Prompt: {prompt_name}")
+
     model = SentenceTransformer(
         str(teacher_path),
         model_kwargs=get_model_dtype_kwargs(prefer_bf16=True),
@@ -160,7 +188,7 @@ def main() -> None:
     if hasattr(model, "max_seq_length"):
         model.max_seq_length = max_length
 
-    shard_dir = output_path.parent / f".{args.lang}_embedding_shards"
+    shard_dir = output_path.parent / f".{args.lang}_{args.phase}_embedding_shards"
     ensure_dir(shard_dir)
     clear_rank_done_markers(shard_dir)
     for old in shard_dir.glob(f"rank{rank}_part_*.parquet"):
@@ -168,24 +196,46 @@ def main() -> None:
 
     rows: list[dict] = []
     shard_idx = 0
-    iterator = tqdm(loader, desc=f"embed-{args.lang}-rank{rank}", disable=not is_main_process(rank))
+    iterator = tqdm(
+        loader,
+        desc=f"embed-{args.phase}-{args.lang}-rank{rank}",
+        disable=not is_main_process(rank),
+    )
 
     for batch in iterator:
-        embeddings = encode_batch(
-            model,
-            batch["text"],
-            prompt_name=prompt_name,
-            batch_size=batch_size,
-        )
-        for row_id, text, lang, emb in zip(batch["id"], batch["text"], batch["lang"], embeddings):
-            rows.append(
-                {
-                    "id": row_id,
-                    "text": text,
-                    "lang": lang,
-                    "embedding": emb.tolist(),
-                }
+        if args.phase == "retrieval" and batch.get("role"):
+            embeddings = encode_batch_by_role(
+                model,
+                batch["text"],
+                batch["role"],
+                query_prompt=query_prompt,
+                doc_prompt=doc_prompt,
+                device=device,
+                max_length=max_length,
+                batch_size=batch_size,
             )
+        else:
+            embeddings = model.encode(
+                batch["text"],
+                prompt_name=prompt_name,
+                batch_size=batch_size,
+                normalize_embeddings=True,
+                convert_to_numpy=True,
+                show_progress_bar=False,
+            )
+
+        for idx, (row_id, text, lang, emb) in enumerate(
+            zip(batch["id"], batch["text"], batch["lang"], embeddings)
+        ):
+            row = {
+                "id": row_id,
+                "text": text,
+                "lang": lang,
+                "embedding": emb.tolist(),
+            }
+            if batch.get("role"):
+                row["role"] = batch["role"][idx]
+            rows.append(row)
 
         if len(rows) >= 50_000:
             shard_path = shard_dir / f"rank{rank}_part_{shard_idx:05d}.parquet"

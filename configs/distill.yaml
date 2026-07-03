@@ -12,6 +12,13 @@ paths:
   sts_data_root: ""            # e.g. {gpu_data_root}/sts
   en_sts_test: ""              # e.g. {sts_data_root}/en/stsbenchmark_test.parquet
   ko_sts_test: ""              # e.g. {sts_data_root}/ko/korsts_test.parquet
+  # Optional explicit retrieval paths (defaults under {data_root}/retrieval/...)
+  en_retrieval_corpus: ""
+  ko_retrieval_corpus: ""
+  en_retrieval_embeddings: ""
+  ko_retrieval_embeddings: ""
+  retrieval_checkpoint_en: ""
+  retrieval_checkpoint_final: ""
 
 data:
   pilot_samples_per_lang: 0    # 0 = disabled; use full_en_samples / full_ko_samples
@@ -31,6 +38,20 @@ training:
   grad_clip: 1.0
   seed: 42
   prompt_name: sts_query
+
+# Future phase: retrieval distillation (not used in v1 scripts)
+phases:
+  retrieval:
+    query_prompt: web_search_query
+    doc_prompt: null
+    languages:
+      - en
+      - ko
+    num_epochs_retrieval_en: 1
+    num_epochs_retrieval_ko: 1
+    datasets:
+      en: msmarco_hard_triplets
+      ko: miracl_hard_negatives
 
 eval:
   tasks:
@@ -52,15 +73,18 @@ eval:
     dev_splits:
       STSBenchmark: en/stsbenchmark_validation.parquet
       KorSTS: ko/korsts_valid.parquet
+  retrieval:
+    tasks:
+      - MSMARCO
+      - MIRACLRetrieval
+    query_prompt: web_search_query
+    batch_size: 64
+    languages:
+      MSMARCO: eng-Latn
+      MIRACLRetrieval:
+        - eng-Latn
+        - kor-Kore
 
 debug:
   sample_size: 5000
   seed: 42
-
-# Future phase: retrieval distillation (not used in v1 scripts)
-phases:
-  retrieval:
-    query_prompt: web_search_query
-    doc_prompt: null
-    datasets:
-      - ms_marco_v2.1

@@ -98,33 +98,70 @@ def load_corpus_table(path: Path) -> pa.Table:
     return pq.read_table(path)
 
 
+def _stack_embedding_batch(embedding_values: list[Any]) -> np.ndarray:
+    """Convert one parquet batch of embedding values to a float32 ndarray."""
+    if not embedding_values:
+        return np.zeros((0, 0), dtype=np.float32)
+
+    first = embedding_values[0]
+    if isinstance(first, np.ndarray) and first.ndim == 1:
+        return np.stack([np.asarray(x, dtype=np.float32) for x in embedding_values], axis=0)
+
+    if isinstance(first, (list, tuple)):
+        return np.stack([np.asarray(x, dtype=np.float32) for x in embedding_values], axis=0)
+
+    arr = np.asarray(embedding_values, dtype=np.float32)
+    if arr.ndim == 1:
+        return arr.reshape(1, -1)
+    return arr
+
+
 class CachedEmbeddingDataset:
     """Dataset of text + precomputed teacher embeddings stored in Parquet."""
 
-    def __init__(self, parquet_path: Path, *, role_column: str | None = "role"):
+    def __init__(
+        self,
+        parquet_path: Path,
+        *,
+        role_column: str | None = "role",
+        batch_size: int = 50_000,
+        show_progress: bool = True,
+    ):
+        pf = pq.ParquetFile(parquet_path)
+        available = set(pf.schema_arrow.names)
         columns = ["text", "embedding"]
-        table = pq.read_table(parquet_path)
-        available = set(table.column_names)
-        if role_column and role_column in available:
+        load_role = role_column is not None and role_column in available
+        if load_role:
             columns.append(role_column)
-        table = table.select(columns)
-        self.texts = table.column("text").to_pylist()
-        self.roles = table.column(role_column).to_pylist() if role_column and role_column in columns else None
 
-        embedding_col = table.column("embedding")
-        if pa.types.is_fixed_size_list(embedding_col.type):
-            np_emb = embedding_col.combine_chunks().to_numpy(zero_copy_only=False)
-            if np_emb.dtype == object:
-                self.embeddings = np.stack(
-                    [np.asarray(x, dtype=np.float32) for x in np_emb], axis=0
-                )
-            else:
-                self.embeddings = np.asarray(np_emb, dtype=np.float32)
-        else:
-            self.embeddings = np.stack(
-                [np.asarray(x, dtype=np.float32) for x in embedding_col.to_pylist()],
-                axis=0,
-            )
+        total_rows = pf.metadata.num_rows
+        texts: list[str] = []
+        roles: list[str] = []
+        emb_chunks: list[np.ndarray] = []
+
+        batch_iter = pf.iter_batches(batch_size=batch_size, columns=columns)
+        progress = None
+        if show_progress:
+            from tqdm import tqdm
+
+            progress = tqdm(total=total_rows, desc="Loading cached embeddings", unit="rows")
+
+        try:
+            for batch in batch_iter:
+                chunk = batch.to_pydict()
+                texts.extend(chunk["text"])
+                if load_role:
+                    roles.extend(chunk[role_column])
+                emb_chunks.append(_stack_embedding_batch(chunk["embedding"]))
+                if progress is not None:
+                    progress.update(batch.num_rows)
+        finally:
+            if progress is not None:
+                progress.close()
+
+        self.texts = texts
+        self.roles = roles if load_role else None
+        self.embeddings = np.vstack(emb_chunks) if emb_chunks else np.zeros((0, 0), dtype=np.float32)
 
     def __len__(self) -> int:
         return len(self.texts)

@@ -43,9 +43,15 @@ paths:
   sts_data_root: "/mnt/data/harrier-distill/sts"
   en_sts_test: "/mnt/data/harrier-distill/sts/en/stsbenchmark_test.parquet"
   ko_sts_test: "/mnt/data/harrier-distill/sts/ko/korsts_test.parquet"
+  en_retrieval_corpus: "/mnt/data/harrier-distill/retrieval/en/corpus.parquet"
+  ko_retrieval_corpus: "/mnt/data/harrier-distill/retrieval/ko/corpus.parquet"
+  en_retrieval_embeddings: "/mnt/data/harrier-distill/output/retrieval/embeddings/en_embeddings.parquet"
+  ko_retrieval_embeddings: "/mnt/data/harrier-distill/output/retrieval/embeddings/ko_embeddings.parquet"
+  retrieval_checkpoint_en: "/mnt/data/harrier-distill/output/retrieval/checkpoint_en"
+  retrieval_checkpoint_final: "/mnt/data/harrier-distill/output/retrieval/checkpoint_final"
 ```
 
-Dataset sources are defined in [`configs/datasets.yaml`](configs/datasets.yaml). STS sources are in [`configs/sts_datasets.yaml`](configs/sts_datasets.yaml).
+Dataset sources: [`configs/datasets.yaml`](configs/datasets.yaml) (STS), [`configs/sts_datasets.yaml`](configs/sts_datasets.yaml) (STS eval), [`configs/retrieval_datasets.yaml`](configs/retrieval_datasets.yaml) (retrieval).
 
 ## Step 1 — Download on local (internet)
 

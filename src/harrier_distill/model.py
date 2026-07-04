@@ -190,18 +190,47 @@ def encode_training_batch_by_role(
             max_length=max_length,
         )
 
-    outputs: list[torch.Tensor] = []
-    for text, role in zip(texts, roles):
-        prompt_name = query_prompt if role == "query" else doc_prompt
-        if prompt_name:
-            emb = encode_with_prompt(
+    if len(texts) != len(roles):
+        raise ValueError(f"texts/roles length mismatch: {len(texts)} vs {len(roles)}")
+
+    batch_size = len(texts)
+    query_indices = [idx for idx, role in enumerate(roles) if role == "query"]
+    doc_indices = [idx for idx, role in enumerate(roles) if role != "query"]
+
+    emb_dim = model.get_sentence_embedding_dimension()
+    embeddings = torch.empty(batch_size, emb_dim, device=device)
+
+    if query_indices:
+        query_texts = [texts[idx] for idx in query_indices]
+        query_emb = encode_with_prompt(
+            model,
+            query_texts,
+            prompt_name=query_prompt,
+            device=device,
+            max_length=max_length,
+        )
+        index = torch.tensor(query_indices, device=query_emb.device, dtype=torch.long)
+        embeddings.index_copy_(0, index, query_emb)
+
+    if doc_indices:
+        doc_texts = [texts[idx] for idx in doc_indices]
+        if doc_prompt:
+            doc_emb = encode_with_prompt(
                 model,
-                [text],
-                prompt_name=prompt_name,
+                doc_texts,
+                prompt_name=doc_prompt,
                 device=device,
                 max_length=max_length,
             )
         else:
-            emb = encode_texts(model, [text], device=device, max_length=max_length, prompt_name=None)
-        outputs.append(emb)
-    return torch.cat(outputs, dim=0)
+            doc_emb = encode_texts(
+                model,
+                doc_texts,
+                device=device,
+                max_length=max_length,
+                prompt_name=None,
+            )
+        index = torch.tensor(doc_indices, device=doc_emb.device, dtype=torch.long)
+        embeddings.index_copy_(0, index, doc_emb)
+
+    return embeddings

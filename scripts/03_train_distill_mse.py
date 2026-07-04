@@ -145,7 +145,11 @@ def main() -> None:
         print(f"Loading cached embeddings: {embeddings_path}")
 
     role_column = "role" if args.phase == "retrieval" else None
-    dataset = CachedEmbeddingDataset(embeddings_path, role_column=role_column)
+    dataset = CachedEmbeddingDataset(
+        embeddings_path,
+        role_column=role_column,
+        show_progress=is_main_process(rank),
+    )
     sampler = DistributedSampler(dataset, shuffle=True) if world_size > 1 else None
     loader = DataLoader(
         dataset,

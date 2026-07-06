@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Evaluate STS-B (STSBenchmark) and KorSTS for teacher/student checkpoints."""
+"""Evaluate MTEB(eng, v2) STS tasks and KorSTS for teacher/student checkpoints."""
 
 from __future__ import annotations
 
@@ -13,6 +13,9 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from harrier_distill.config import get_resolved_paths, load_distill_config, require_path, resolve_sts_paths
 from harrier_distill.eval import evaluate_sts, print_eval_summary, save_eval_summary
+from harrier_distill.mteb_sts import mteb_eng_v2_sts_task_names
+
+MTEB_ENG_V2_STS = mteb_eng_v2_sts_task_names()
 
 
 def parse_args() -> argparse.Namespace:
@@ -45,7 +48,7 @@ def main() -> None:
 
     summary = evaluate_sts(
         args.model,
-        tasks=eval_cfg.get("tasks", ["STSBenchmark", "KorSTS"]),
+        tasks=eval_cfg.get("tasks", [*MTEB_ENG_V2_STS, "KorSTS"]),
         prompt_name=eval_cfg.get("prompt_name", "sts_query"),
         batch_size=int(eval_cfg.get("batch_size", 64)),
         output_dir=mteb_dir / label if not args.local_sts else None,

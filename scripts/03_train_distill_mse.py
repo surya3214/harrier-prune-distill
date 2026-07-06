@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MSE distillation training on cached teacher embeddings (DDP, 4-GPU)."""
+"""Distillation training on cached teacher embeddings (DDP, multi-loss)."""
 
 from __future__ import annotations
 
@@ -9,8 +9,8 @@ import math
 import sys
 from pathlib import Path
 
+import numpy as np
 import torch
-import torch.nn.functional as F
 from sentence_transformers import SentenceTransformer
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
@@ -21,6 +21,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from harrier_distill.config import (
+    get_loss_weights,
     get_phase_config,
     get_resolved_paths,
     load_distill_config,
@@ -30,6 +31,13 @@ from harrier_distill.config import (
 )
 from harrier_distill.data import CachedEmbeddingDataset, ensure_dir
 from harrier_distill.distributed import barrier, cleanup_distributed, init_distributed, is_main_process
+from harrier_distill.losses import (
+    combine_weighted_losses,
+    cosine_embedding_loss,
+    format_loss_postfix,
+    pairwise_mse_loss,
+    pointwise_mse_loss,
+)
 from harrier_distill.model import encode_training_batch_by_role, encode_with_prompt, get_model_dtype_kwargs
 
 
@@ -106,6 +114,82 @@ def resolve_training_paths(args: argparse.Namespace, cfg: dict, paths: dict) -> 
     return embeddings_path, checkpoint_dir, init_path
 
 
+def encode_student_batch(
+    raw_model: SentenceTransformer,
+    texts: list[str],
+    roles: list[str] | None,
+    *,
+    phase: str,
+    query_prompt: str,
+    doc_prompt: str | None,
+    prompt_name: str,
+    device: torch.device,
+    max_length: int,
+) -> torch.Tensor:
+    if phase == "retrieval" and roles:
+        return encode_training_batch_by_role(
+            raw_model,
+            texts,
+            roles,
+            query_prompt=query_prompt,
+            doc_prompt=doc_prompt,
+            default_prompt=prompt_name,
+            device=device,
+            max_length=max_length,
+        )
+    return encode_with_prompt(
+        raw_model,
+        texts,
+        prompt_name=prompt_name,
+        device=device,
+        max_length=max_length,
+    )
+
+
+def encode_triplet_batch(
+    raw_model: SentenceTransformer,
+    triplets: list[dict],
+    *,
+    query_prompt: str,
+    doc_prompt: str | None,
+    prompt_name: str,
+    device: torch.device,
+    max_length: int,
+) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
+    if not triplets:
+        return [], []
+
+    all_texts: list[str] = []
+    all_roles: list[str] = []
+    sizes: list[int] = []
+    teacher_chunks: list[torch.Tensor] = []
+    for triplet in triplets:
+        all_texts.extend(triplet["texts"])
+        all_roles.extend(triplet["roles"])
+        sizes.append(len(triplet["texts"]))
+        teacher_chunks.append(triplet["teacher_embedding"])
+
+    student_all = encode_training_batch_by_role(
+        raw_model,
+        all_texts,
+        all_roles,
+        query_prompt=query_prompt,
+        doc_prompt=doc_prompt,
+        default_prompt=prompt_name,
+        device=device,
+        max_length=max_length,
+    ).float()
+
+    student_triplets: list[torch.Tensor] = []
+    teacher_triplets: list[torch.Tensor] = []
+    offset = 0
+    for size, teacher in zip(sizes, teacher_chunks):
+        student_triplets.append(student_all[offset : offset + size])
+        teacher_triplets.append(teacher.to(device=device, dtype=torch.float32))
+        offset += size
+    return student_triplets, teacher_triplets
+
+
 def main() -> None:
     args = parse_args()
     rank, _local_rank, world_size, device = init_distributed()
@@ -116,6 +200,7 @@ def main() -> None:
     train_cfg = cfg.get("training", {})
 
     embeddings_path, checkpoint_dir, init_path = resolve_training_paths(args, cfg, paths)
+    loss_weights = get_loss_weights(cfg, args.phase)
 
     if args.phase == "retrieval":
         phase_cfg = get_phase_config(cfg, "retrieval")
@@ -131,6 +216,7 @@ def main() -> None:
         num_epochs = int(train_cfg.get("num_epochs_en" if args.lang == "en" else "num_epochs_ko", 1))
 
     batch_size = int(train_cfg.get("train_batch_size_per_gpu", 256))
+    pairwise_triplets_per_batch = int(train_cfg.get("pairwise_triplets_per_batch", 64))
     learning_rate = float(train_cfg.get("learning_rate", 1e-5))
     weight_decay = float(train_cfg.get("weight_decay", 0.01))
     grad_clip = float(train_cfg.get("grad_clip", 1.0))
@@ -139,31 +225,57 @@ def main() -> None:
     seed = int(train_cfg.get("seed", 42))
 
     torch.manual_seed(seed + rank)
+    triplet_rng = np.random.default_rng(seed + rank)
 
     if is_main_process(rank):
         print(f"Phase: {args.phase}")
+        print(f"Loss weights: {loss_weights}")
         print(f"Loading cached embeddings: {embeddings_path}")
 
     role_column = "role" if args.phase == "retrieval" else None
+    triplet_id_column = "triplet_id" if args.phase == "retrieval" else None
     dataset = CachedEmbeddingDataset(
         embeddings_path,
         role_column=role_column,
+        triplet_id_column=triplet_id_column,
         show_progress=is_main_process(rank),
     )
-    sampler = DistributedSampler(dataset, shuffle=True) if world_size > 1 else None
-    loader = DataLoader(
-        dataset,
-        batch_size=batch_size,
-        sampler=sampler,
-        shuffle=sampler is None,
-        num_workers=4,
-        pin_memory=True,
-        collate_fn=collate_batch,
-        drop_last=False,
-    )
+
+    use_pairwise = loss_weights.get("pairwise_mse", 0.0) > 0
+    if use_pairwise and not dataset.has_triplets:
+        if is_main_process(rank):
+            print(
+                "WARNING: pairwise_mse weight > 0 but embedding parquet has no usable triplets. "
+                "Re-run 02_generate_teacher_embeddings.py --phase retrieval after triplet_id support. "
+                "Disabling pairwise_mse for this run."
+            )
+        loss_weights = dict(loss_weights)
+        loss_weights["pairwise_mse"] = 0.0
+        use_pairwise = False
+        if sum(loss_weights.values()) <= 0:
+            loss_weights["mse"] = 1.0
+
+    use_pointwise = loss_weights.get("mse", 0.0) > 0 or loss_weights.get("cosine", 0.0) > 0
+    steps_per_epoch = max(math.ceil(len(dataset) / (batch_size * world_size)), 1)
+
+    sampler = DistributedSampler(dataset, shuffle=True) if world_size > 1 and use_pointwise else None
+    loader = None
+    if use_pointwise:
+        loader = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            sampler=sampler,
+            shuffle=sampler is None,
+            num_workers=4,
+            pin_memory=True,
+            collate_fn=collate_batch,
+            drop_last=False,
+        )
 
     if is_main_process(rank):
         print(f"Loading student from: {init_path}")
+        if dataset.has_triplets:
+            print(f"Loaded {len(dataset.triplet_id_list):,} retrieval triplets for pairwise loss")
 
     model = SentenceTransformer(
         str(init_path),
@@ -181,7 +293,6 @@ def main() -> None:
     raw_model = model.module if isinstance(model, DDP) else model
     optimizer = torch.optim.AdamW(raw_model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 
-    steps_per_epoch = math.ceil(len(dataset) / (batch_size * world_size))
     total_steps = max(steps_per_epoch * num_epochs, 1)
     warmup_steps = int(total_steps * warmup_ratio)
 
@@ -194,43 +305,75 @@ def main() -> None:
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
     global_step = 0
-    running_loss = 0.0
+    running_totals = {"total": 0.0, "mse": 0.0, "cosine": 0.0, "pairwise_mse": 0.0}
+    running_counts = {"mse": 0, "cosine": 0, "pairwise_mse": 0}
 
     for epoch in range(num_epochs):
         if sampler is not None:
             sampler.set_epoch(epoch)
 
+        if use_pointwise:
+            step_iterable = loader
+        else:
+            step_iterable = range(steps_per_epoch)
+
         progress = tqdm(
-            loader,
+            step_iterable,
             desc=f"train-{args.phase}-{args.lang}-epoch{epoch + 1}",
             disable=not is_main_process(rank),
         )
-        for batch in progress:
-            texts = batch["text"]
-            roles = batch.get("role")
-            teacher_emb = batch["teacher_embedding"].to(device, dtype=torch.float32)
+        for step_idx, batch in enumerate(progress):
+            mse_loss = None
+            cosine_loss = None
+            pairwise_loss = None
 
-            with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"):
-                if args.phase == "retrieval" and roles:
-                    student_emb = encode_training_batch_by_role(
+            if use_pointwise:
+                texts = batch["text"]
+                roles = batch.get("role")
+                teacher_emb = batch["teacher_embedding"].to(device, dtype=torch.float32)
+
+                with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"):
+                    student_emb = encode_student_batch(
                         raw_model,
                         texts,
                         roles,
+                        phase=args.phase,
                         query_prompt=query_prompt,
                         doc_prompt=doc_prompt,
-                        default_prompt=prompt_name,
-                        device=device,
-                        max_length=max_length,
-                    )
-                else:
-                    student_emb = encode_with_prompt(
-                        raw_model,
-                        texts,
                         prompt_name=prompt_name,
                         device=device,
                         max_length=max_length,
                     )
-            loss = F.mse_loss(student_emb.float(), teacher_emb)
+
+                if loss_weights.get("mse", 0.0) > 0:
+                    mse_loss = pointwise_mse_loss(student_emb, teacher_emb)
+                if loss_weights.get("cosine", 0.0) > 0:
+                    cosine_loss = cosine_embedding_loss(student_emb, teacher_emb)
+
+            if use_pairwise:
+                triplet_seed = seed + rank + global_step + step_idx
+                triplet_rng_step = np.random.default_rng(triplet_seed)
+                triplets = dataset.sample_triplets(pairwise_triplets_per_batch, triplet_rng_step)
+                with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"):
+                    student_triplets, teacher_triplets = encode_triplet_batch(
+                        raw_model,
+                        triplets,
+                        query_prompt=query_prompt,
+                        doc_prompt=doc_prompt,
+                        prompt_name=prompt_name,
+                        device=device,
+                        max_length=max_length,
+                    )
+                if student_triplets:
+                    pairwise_loss = pairwise_mse_loss(student_triplets, teacher_triplets)
+
+            components = combine_weighted_losses(
+                weights=loss_weights,
+                mse=mse_loss,
+                cosine=cosine_loss,
+                pairwise_mse=pairwise_loss,
+            )
+            loss = components.total
 
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
@@ -240,9 +383,21 @@ def main() -> None:
             scheduler.step()
 
             global_step += 1
-            running_loss += loss.item()
+            running_totals["total"] += components.total.item()
+            if components.mse is not None:
+                running_totals["mse"] += components.mse.item()
+                running_counts["mse"] += 1
+            if components.cosine is not None:
+                running_totals["cosine"] += components.cosine.item()
+                running_counts["cosine"] += 1
+            if components.pairwise_mse is not None:
+                running_totals["pairwise_mse"] += components.pairwise_mse.item()
+                running_counts["pairwise_mse"] += 1
+
             if is_main_process(rank):
-                progress.set_postfix(loss=f"{loss.item():.6f}", lr=f"{scheduler.get_last_lr()[0]:.2e}")
+                postfix = format_loss_postfix(components, loss_weights)
+                postfix["lr"] = f"{scheduler.get_last_lr()[0]:.2e}"
+                progress.set_postfix(postfix)
 
     barrier()
     save_checkpoint(raw_model, checkpoint_dir, rank)
@@ -253,10 +408,15 @@ def main() -> None:
             "lang": args.lang,
             "epochs": num_epochs,
             "global_steps": global_step,
-            "avg_loss": running_loss / max(global_step, 1),
+            "avg_loss": running_totals["total"] / max(global_step, 1),
+            "avg_mse": running_totals["mse"] / max(running_counts["mse"], 1),
+            "avg_cosine": running_totals["cosine"] / max(running_counts["cosine"], 1),
+            "avg_pairwise_mse": running_totals["pairwise_mse"] / max(running_counts["pairwise_mse"], 1),
+            "loss_weights": loss_weights,
             "checkpoint_dir": str(checkpoint_dir),
             "init_model": str(init_path),
             "embeddings": str(embeddings_path),
+            "triplet_count": len(dataset.triplet_id_list),
         }
         metrics_path = checkpoint_dir / "train_metrics.json"
         with open(metrics_path, "w", encoding="utf-8") as f:

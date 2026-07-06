@@ -48,11 +48,19 @@ def parse_args() -> argparse.Namespace:
 
 
 class CorpusDataset(Dataset):
-    def __init__(self, texts: list[str], ids: list[str], langs: list[str], roles: list[str] | None = None):
+    def __init__(
+        self,
+        texts: list[str],
+        ids: list[str],
+        langs: list[str],
+        roles: list[str] | None = None,
+        triplet_ids: list[str] | None = None,
+    ):
         self.texts = texts
         self.ids = ids
         self.langs = langs
         self.roles = roles
+        self.triplet_ids = triplet_ids
 
     def __len__(self) -> int:
         return len(self.texts)
@@ -61,6 +69,8 @@ class CorpusDataset(Dataset):
         item = {"id": self.ids[idx], "text": self.texts[idx], "lang": self.langs[idx]}
         if self.roles is not None:
             item["role"] = self.roles[idx]
+        if self.triplet_ids is not None:
+            item["triplet_id"] = self.triplet_ids[idx]
         return item
 
 
@@ -72,6 +82,8 @@ def collate_rows(batch: list[dict]) -> dict:
     }
     if "role" in batch[0]:
         collated["role"] = [item["role"] for item in batch]
+    if "triplet_id" in batch[0]:
+        collated["triplet_id"] = [item["triplet_id"] for item in batch]
     return collated
 
 
@@ -151,15 +163,19 @@ def main() -> None:
 
     columns = ["id", "text", "lang"]
     schema_names = pq.read_schema(corpus_path).names
-    if args.phase == "retrieval" and "role" in schema_names:
-        columns.append("role")
+    if args.phase == "retrieval":
+        if "role" in schema_names:
+            columns.append("role")
+        if "triplet_id" in schema_names:
+            columns.append("triplet_id")
     table = pq.read_table(corpus_path, columns=columns)
     texts = table.column("text").to_pylist()
     ids = table.column("id").to_pylist()
     langs = table.column("lang").to_pylist()
     roles = table.column("role").to_pylist() if "role" in columns else None
+    triplet_ids = table.column("triplet_id").to_pylist() if "triplet_id" in columns else None
 
-    dataset = CorpusDataset(texts, ids, langs, roles)
+    dataset = CorpusDataset(texts, ids, langs, roles, triplet_ids)
     sampler = DistributedSampler(dataset, shuffle=False) if world_size > 1 else None
     loader = DataLoader(
         dataset,
@@ -235,6 +251,8 @@ def main() -> None:
             }
             if batch.get("role"):
                 row["role"] = batch["role"][idx]
+            if batch.get("triplet_id"):
+                row["triplet_id"] = batch["triplet_id"][idx]
             rows.append(row)
 
         if len(rows) >= 50_000:

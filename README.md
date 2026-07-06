@@ -16,9 +16,39 @@ Local (internet)                GPU (offline, 4x H100)
 ```
 
 - **Prompt:** `sts_query` on all distillation and eval text
-- **Loss:** MSE on L2-normalized 640-dim embeddings
+- **Loss:** Configurable weighted mix of pointwise MSE, cosine embedding loss, and pairwise MSE (all on L2-normalized 640-dim embeddings)
 - **Data:** ~4.5M total (~2.3M EN + ~2.3M KO), no pilot phase
 - **Seq length:** 512 tokens
+
+## Training losses
+
+Configure weights in [`configs/distill.yaml`](configs/distill.yaml):
+
+```yaml
+training:
+  losses:
+    mse: 1.0
+    cosine: 0.0
+    pairwise_mse: 0.0
+  pairwise_triplets_per_batch: 64
+
+phases:
+  retrieval:
+    losses:
+      mse: 1.0
+      cosine: 0.0
+      pairwise_mse: 0.0   # increase after re-embedding with triplet_id
+```
+
+| Loss | Description | STS phase | Retrieval phase |
+|------|-------------|-----------|-----------------|
+| `mse` | Pointwise MSE vs cached teacher embeddings | Yes | Yes |
+| `cosine` | `1 - cosine_similarity(student, teacher)` on normalized vectors | Yes | Yes |
+| `pairwise_mse` | MSE on query↔doc dot products per triplet vs teacher | No (weight 0) | Yes, after re-embed |
+
+**Defaults** preserve prior behavior: `mse: 1.0`, others `0.0`.
+
+**Pairwise MSE requirement:** Retrieval embedding parquet must include `triplet_id` (written by `02_generate_teacher_embeddings.py --phase retrieval`). If you generated retrieval embeddings before this column existed, re-run teacher embedding generation before enabling `pairwise_mse > 0`.
 
 ## Setup
 
@@ -272,7 +302,7 @@ python scripts/01_download_retrieval_local.py --config configs/distill.yaml --pi
 python scripts/01_download_retrieval_local.py --config configs/distill.yaml
 ```
 
-Outputs `{local_data_root}/retrieval/{en,ko}/corpus.parquet` with `role` column (`query` | `doc`).
+Outputs `{local_data_root}/retrieval/{en,ko}/corpus.parquet` with `role` (`query` | `doc`) and `triplet_id` columns.
 
 ### Download retrieval eval benchmarks (local, internet)
 
@@ -329,7 +359,8 @@ Tasks: MTEB `MSMARCO` (EN dev) + `MIRACLRetrieval` (`en`, `ko` dev subsets). Sui
 
 | Symptom | Action |
 |---------|--------|
-| STS gap >10% after KO step | Add `1 - cosine_sim` loss term |
+| STS gap >10% after KO step | Increase `training.losses.cosine` (e.g. `0.1–0.5`) |
+| Low pointwise MSE but poor STS/retrieval | Add `pairwise_mse` on retrieval after re-embedding with `triplet_id` |
 | Still lagging | Small contrastive pass on NLI pairs |
 | Pruned baseline very low | Check layer removal; consider hidden-state distill |
 | KO noisy | Increase KLUE-NLI / KoWiki mix in `datasets.yaml` |
@@ -357,5 +388,5 @@ scripts/
   run_gpu_pipeline.sh
   run_gpu_retrieval_pipeline.sh
 src/harrier_distill/
-  config.py data.py model.py eval.py retrieval.py retrieval_eval.py sts.py debug.py distributed.py text.py
+  config.py data.py losses.py model.py eval.py retrieval.py retrieval_eval.py sts.py debug.py distributed.py text.py
 ```

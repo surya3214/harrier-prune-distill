@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections import defaultdict
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -116,6 +117,29 @@ def _stack_embedding_batch(embedding_values: list[Any]) -> np.ndarray:
     return arr
 
 
+def _build_triplet_groups(
+    triplet_ids: list[str],
+    roles: list[str],
+) -> tuple[dict[str, dict[str, list[int]]], list[str]]:
+    groups: dict[str, dict[str, list[int]]] = defaultdict(lambda: {"query": [], "doc": []})
+    for idx, (triplet_id, role) in enumerate(zip(triplet_ids, roles)):
+        if role == "query":
+            groups[triplet_id]["query"].append(idx)
+        else:
+            groups[triplet_id]["doc"].append(idx)
+
+    valid_triplets: dict[str, dict[str, list[int]]] = {}
+    triplet_id_list: list[str] = []
+    for triplet_id, group in groups.items():
+        if len(group["query"]) == 1 and len(group["doc"]) >= 1:
+            valid_triplets[triplet_id] = {
+                "query": group["query"],
+                "doc": group["doc"],
+            }
+            triplet_id_list.append(triplet_id)
+    return valid_triplets, triplet_id_list
+
+
 class CachedEmbeddingDataset:
     """Dataset of text + precomputed teacher embeddings stored in Parquet."""
 
@@ -124,6 +148,7 @@ class CachedEmbeddingDataset:
         parquet_path: Path,
         *,
         role_column: str | None = "role",
+        triplet_id_column: str | None = "triplet_id",
         batch_size: int = 50_000,
         show_progress: bool = True,
     ):
@@ -131,12 +156,16 @@ class CachedEmbeddingDataset:
         available = set(pf.schema_arrow.names)
         columns = ["text", "embedding"]
         load_role = role_column is not None and role_column in available
+        load_triplet_id = triplet_id_column is not None and triplet_id_column in available
         if load_role:
             columns.append(role_column)
+        if load_triplet_id:
+            columns.append(triplet_id_column)
 
         total_rows = pf.metadata.num_rows
         texts: list[str] = []
         roles: list[str] = []
+        triplet_ids: list[str] = []
         emb_chunks: list[np.ndarray] = []
 
         batch_iter = pf.iter_batches(batch_size=batch_size, columns=columns)
@@ -152,6 +181,8 @@ class CachedEmbeddingDataset:
                 texts.extend(chunk["text"])
                 if load_role:
                     roles.extend(chunk[role_column])
+                if load_triplet_id:
+                    triplet_ids.extend(chunk[triplet_id_column])
                 emb_chunks.append(_stack_embedding_batch(chunk["embedding"]))
                 if progress is not None:
                     progress.update(batch.num_rows)
@@ -161,7 +192,12 @@ class CachedEmbeddingDataset:
 
         self.texts = texts
         self.roles = roles if load_role else None
+        self.triplet_ids = triplet_ids if load_triplet_id else None
         self.embeddings = np.vstack(emb_chunks) if emb_chunks else np.zeros((0, 0), dtype=np.float32)
+        self.triplets: dict[str, dict[str, list[int]]] = {}
+        self.triplet_id_list: list[str] = []
+        if self.triplet_ids is not None and self.roles is not None:
+            self.triplets, self.triplet_id_list = _build_triplet_groups(self.triplet_ids, self.roles)
 
     def __len__(self) -> int:
         return len(self.texts)
@@ -176,6 +212,34 @@ class CachedEmbeddingDataset:
         if self.roles is not None:
             item["role"] = self.roles[idx]
         return item
+
+    @property
+    def has_triplets(self) -> bool:
+        return bool(self.triplet_id_list)
+
+    def sample_triplets(self, count: int, rng: np.random.Generator) -> list[dict[str, Any]]:
+        """Sample retrieval triplets with texts, roles, and teacher embeddings."""
+        import torch
+
+        if not self.triplet_id_list:
+            return []
+
+        size = min(count, len(self.triplet_id_list))
+        chosen = rng.choice(len(self.triplet_id_list), size=size, replace=size > len(self.triplet_id_list))
+        samples: list[dict[str, Any]] = []
+        for choice in chosen:
+            triplet_id = self.triplet_id_list[int(choice)]
+            group = self.triplets[triplet_id]
+            indices = [group["query"][0], *group["doc"]]
+            samples.append(
+                {
+                    "triplet_id": triplet_id,
+                    "texts": [self.texts[idx] for idx in indices],
+                    "roles": [self.roles[idx] for idx in indices] if self.roles is not None else None,
+                    "teacher_embedding": torch.from_numpy(self.embeddings[indices].astype(np.float32)),
+                }
+            )
+        return samples
 
 
 def corpus_row(

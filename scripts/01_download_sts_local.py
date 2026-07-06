@@ -16,6 +16,7 @@ from harrier_distill.config import (
     load_sts_datasets_config,
     require_path,
 )
+from harrier_distill.mteb_sts import mteb_eng_v2_sts_task_names
 from harrier_distill.sts import (
     download_sts_split,
     parquet_sha1,
@@ -32,7 +33,30 @@ def parse_args() -> argparse.Namespace:
         default=str(PROJECT_ROOT / "configs" / "sts_datasets.yaml"),
     )
     parser.add_argument("--lang", choices=["en", "ko", "both"], default="both")
+    parser.add_argument(
+        "--tasks",
+        nargs="+",
+        default=None,
+        help="Explicit MTEB task names to download (overrides --lang filter)",
+    )
     return parser.parse_args()
+
+
+def select_tasks(sts_cfg: dict, *, lang: str, tasks: list[str] | None) -> list[tuple[str, dict]]:
+    if tasks:
+        selected = []
+        for task_name in tasks:
+            if task_name not in sts_cfg:
+                raise KeyError(f"Task '{task_name}' missing from STS datasets config")
+            selected.append((task_name, sts_cfg[task_name]))
+        return selected
+
+    langs = {"en", "ko"} if lang == "both" else {lang}
+    return [
+        (task_name, task_cfg)
+        for task_name, task_cfg in sts_cfg.items()
+        if task_cfg.get("lang") in langs
+    ]
 
 
 def main() -> None:
@@ -43,35 +67,35 @@ def main() -> None:
     local_root = require_path(paths, "local_data_root")
 
     sts_root = local_root / "sts"
-    langs = ["en", "ko"] if args.lang == "both" else [args.lang]
     manifest_entries: list[dict] = []
 
-    for lang in langs:
-        if lang not in sts_cfg:
-            raise KeyError(f"Language '{lang}' missing from STS datasets config")
-        lang_cfg = sts_cfg[lang]
-        task = lang_cfg["task"]
+    for task_name, task_cfg in select_tasks(sts_cfg, lang=args.lang, tasks=args.tasks):
+        lang = task_cfg["lang"]
         out_dir = sts_root / lang
 
-        for source in lang_cfg.get("sources", []):
+        for source in task_cfg.get("sources", []):
             name = source["name"]
             hf_path = source["hf_path"]
             split = source["split"]
+            hf_subset = source.get("hf_subset")
             output_path = out_dir / f"{name}.parquet"
 
-            print(f"Downloading {lang}/{name} from {hf_path} [{split}] ...")
+            subset_label = f" subset={hf_subset}" if hf_subset else ""
+            print(f"Downloading {task_name}/{name} from {hf_path} [{split}]{subset_label} ...")
             rows = download_sts_split(
                 hf_path=hf_path,
                 split=split,
                 lang=lang,
-                task=task,
+                task=task_name,
+                hf_subset=hf_subset,
             )
             count = write_sts_parquet(rows, output_path)
             entry = {
                 "lang": lang,
-                "task": task,
+                "task": task_name,
                 "name": name,
                 "hf_path": hf_path,
+                "hf_subset": hf_subset,
                 "split": split,
                 "rows": count,
                 "path": str(output_path),
@@ -85,6 +109,7 @@ def main() -> None:
     print(f"\nWrote manifest -> {manifest_path}")
     print("\nSTS download complete.")
     print(f"  root: {sts_root}")
+    print(f"  MTEB(eng, v2) STS tasks: {', '.join(mteb_eng_v2_sts_task_names())}")
     print("\nNext: rsync local_data_root to gpu_data_root, then run eval with --local-sts.")
 
 

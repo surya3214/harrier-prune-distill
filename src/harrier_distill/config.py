@@ -45,6 +45,11 @@ def load_retrieval_datasets_config(path: str | Path | None = None) -> dict[str, 
     return load_yaml(config_path)
 
 
+def load_retrieval_eval_datasets_config(path: str | Path | None = None) -> dict[str, Any]:
+    config_path = Path(path) if path else PROJECT_ROOT / "configs" / "retrieval_eval_datasets.yaml"
+    return load_yaml(config_path)
+
+
 def get_phase_config(cfg: dict[str, Any], phase: str) -> dict[str, Any]:
     phases = cfg.get("phases", {})
     if phase not in phases:
@@ -192,4 +197,33 @@ def resolve_sts_dev_paths(cfg: dict[str, Any]) -> dict[str, Path]:
         if not path.is_absolute():
             path = (sts_root / path).resolve()
         resolved[task_name] = path
+    return resolved
+
+
+def resolve_retrieval_eval_paths(cfg: dict[str, Any]) -> dict[str, Path | dict[str, Path]]:
+    """Resolve local retrieval eval parquet directories for each MTEB task name."""
+    paths = get_resolved_paths(cfg)
+    local_retrieval = cfg.get("eval", {}).get("local_retrieval", {})
+    task_dirs: dict[str, Any] = local_retrieval.get("tasks", {})
+
+    root = paths.get("retrieval_eval_data_root")
+    if root is None or str(root) == "":
+        root = paths.get("gpu_data_root") or paths.get("local_data_root")
+    if root is None or str(root) == "":
+        raise ValueError(
+            "Missing retrieval eval data root: set paths.retrieval_eval_data_root or local/gpu_data_root"
+        )
+
+    resolved: dict[str, Path | dict[str, Path]] = {}
+    for task_name, spec in task_dirs.items():
+        if isinstance(spec, dict):
+            resolved[task_name] = {
+                subset: (root / rel_path).resolve() if not Path(rel_path).is_absolute() else Path(rel_path).resolve()
+                for subset, rel_path in spec.items()
+            }
+        else:
+            path = Path(spec)
+            if not path.is_absolute():
+                path = (root / path).resolve()
+            resolved[task_name] = path
     return resolved

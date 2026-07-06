@@ -40,3 +40,4 @@ run_train ko
 echo "=== Final retrieval eval ==="
 echo "python $ROOT/scripts/04_eval_retrieval.py --config $CONFIG --model <output_dir>/retrieval/checkpoint_final --label retrieval_final --suite en_ko"
 echo "python $ROOT/scripts/05_compare_retrieval.py --config $CONFIG --student <output_dir>/retrieval/checkpoint_final --suite en_ko"
+echo "python $ROOT/scripts/05_compare_retrieval.py --config $CONFIG --student <output_dir>/retrieval/checkpoint_final --suite en_ko --local-retrieval"

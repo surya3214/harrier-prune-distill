@@ -7,6 +7,11 @@ from typing import Any
 import mteb
 
 from harrier_distill.model import load_sentence_transformer
+from harrier_distill.retrieval_eval import (
+    RetrievalTaskPaths,
+    evaluate_retrieval_local,
+    get_local_retrieval_task_paths,
+)
 from harrier_distill.sts import evaluate_sts_local
 
 STS_SUITES: dict[str, list[str]] = {
@@ -69,6 +74,30 @@ def _miracl_eval_subsets(languages_cfg: dict[str, Any] | list[str] | None) -> li
     return [mapping.get(lang, lang) for lang in miracl_langs]
 
 
+def _filter_local_retrieval_paths(
+    local_task_paths: dict[str, RetrievalTaskPaths],
+    *,
+    miracl_subsets: list[str] | None,
+) -> dict[str, RetrievalTaskPaths]:
+    if miracl_subsets is None or "MIRACLRetrieval" not in local_task_paths:
+        return local_task_paths
+
+    miracl_paths = local_task_paths["MIRACLRetrieval"]
+    if not isinstance(miracl_paths, dict):
+        return local_task_paths
+
+    filtered = dict(local_task_paths)
+    filtered["MIRACLRetrieval"] = {
+        subset: path for subset, path in miracl_paths.items() if subset in miracl_subsets
+    }
+    if not filtered["MIRACLRetrieval"]:
+        raise ValueError(
+            f"No MIRACL local subsets match miracl_subsets={miracl_subsets}. "
+            f"Available: {', '.join(sorted(miracl_paths))}"
+        )
+    return filtered
+
+
 def evaluate_retrieval(
     model_path: str | Path,
     *,
@@ -77,9 +106,28 @@ def evaluate_retrieval(
     batch_size: int = 64,
     output_dir: str | Path | None = None,
     miracl_subsets: list[str] | None = None,
+    use_local_retrieval: bool = False,
+    local_task_paths: dict[str, RetrievalTaskPaths] | None = None,
+    max_length: int = 512,
 ) -> dict[str, Any]:
-    """Run retrieval tasks via MTEB and return per-task nDCG@10 (main_score)."""
+    """Run retrieval tasks via MTEB or local parquet and return per-task nDCG@10."""
     task_names = tasks or ["MSMARCO", "MIRACLRetrieval"]
+    if use_local_retrieval:
+        if local_task_paths is None:
+            raise ValueError("local_task_paths is required when use_local_retrieval=True")
+        filtered_paths = _filter_local_retrieval_paths(
+            get_local_retrieval_task_paths(task_names, local_task_paths),
+            miracl_subsets=miracl_subsets,
+        )
+        return evaluate_retrieval_local(
+            model_path,
+            task_names=task_names,
+            local_task_paths=filtered_paths,
+            query_prompt=query_prompt,
+            batch_size=batch_size,
+            max_length=max_length,
+        )
+
     mteb_tasks = mteb.get_tasks(tasks=task_names)
 
     model = load_sentence_transformer(model_path)
@@ -124,11 +172,22 @@ def compare_retrieval(
     batch_size: int = 64,
     output_dir: str | Path | None = None,
     miracl_subsets: list[str] | None = None,
+    use_local_retrieval: bool = False,
+    local_task_paths: dict[str, RetrievalTaskPaths] | None = None,
+    max_length: int = 512,
 ) -> dict[str, Any]:
     """Evaluate teacher and student (and optional baseline) on retrieval tasks."""
     task_names = get_retrieval_tasks_for_suite(suite, tasks=tasks)
+    if use_local_retrieval:
+        unsupported = [name for name in task_names if name not in (local_task_paths or {})]
+        if unsupported:
+            raise ValueError(
+                f"Local retrieval mode does not support tasks: {', '.join(unsupported)}. "
+                "Run scripts/01_download_retrieval_eval_local.py and configure eval.local_retrieval."
+            )
+
     output_root = Path(output_dir) if output_dir else None
-    mteb_root = output_root / "mteb_runs" if output_root else None
+    mteb_root = output_root / "mteb_runs" if output_root and not use_local_retrieval else None
 
     models: list[tuple[str, str | Path]] = [
         ("teacher", teacher_path),
@@ -147,6 +206,9 @@ def compare_retrieval(
             batch_size=batch_size,
             output_dir=model_mteb_dir,
             miracl_subsets=miracl_subsets,
+            use_local_retrieval=use_local_retrieval,
+            local_task_paths=local_task_paths,
+            max_length=max_length,
         )
 
     comparison_rows: list[dict[str, Any]] = []
@@ -170,7 +232,7 @@ def compare_retrieval(
         )
 
     return {
-        "backend": "mteb",
+        "backend": "local" if use_local_retrieval else "mteb",
         "suite": suite,
         "tasks": task_names,
         "teacher_path": str(teacher_path),

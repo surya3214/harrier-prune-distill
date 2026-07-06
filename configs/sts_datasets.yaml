@@ -1,8 +1,52 @@
 # STS benchmark definitions for scripts/01_download_sts_local.py
 # Run on local infra (internet). Outputs parquet under {local_data_root}/sts/
+#
+# Task keys are MTEB task names. Each task writes to {lang}/{source.name}.parquet.
 
-en:
-  task: STSBenchmark
+BIOSSES:
+  lang: en
+  sources:
+    - name: biosses_test
+      hf_path: mteb/biosses-sts
+      split: test
+
+SICK-R:
+  lang: en
+  sources:
+    - name: sickr_test
+      hf_path: mteb/sickr-sts
+      split: test
+
+STS12:
+  lang: en
+  sources:
+    - name: sts12_test
+      hf_path: mteb/sts12-sts
+      split: test
+
+STS13:
+  lang: en
+  sources:
+    - name: sts13_test
+      hf_path: mteb/sts13-sts
+      split: test
+
+STS14:
+  lang: en
+  sources:
+    - name: sts14_test
+      hf_path: mteb/sts14-sts
+      split: test
+
+STS15:
+  lang: en
+  sources:
+    - name: sts15_test
+      hf_path: mteb/sts15-sts
+      split: test
+
+STSBenchmark:
+  lang: en
   sources:
     - name: stsbenchmark_test
       hf_path: mteb/stsbenchmark-sts
@@ -11,8 +55,24 @@ en:
       hf_path: mteb/stsbenchmark-sts
       split: validation
 
-ko:
-  task: KorSTS
+STS17:
+  lang: en
+  sources:
+    - name: sts17_en_en_test
+      hf_path: mteb/sts17-crosslingual-sts
+      hf_subset: en-en
+      split: test
+
+STS22.v2:
+  lang: en
+  sources:
+    - name: sts22_v2_en_test
+      hf_path: mteb/sts22-crosslingual-sts
+      hf_subset: en
+      split: test
+
+KorSTS:
+  lang: ko
   sources:
     - name: korsts_test
       hf_path: mteb/KorSTS

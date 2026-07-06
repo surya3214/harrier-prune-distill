@@ -7,6 +7,7 @@ from typing import Any
 import mteb
 
 from harrier_distill.model import load_sentence_transformer
+from harrier_distill.mteb_sts import mteb_eng_v2_sts_task_names, resolve_mteb_sts_task_objects
 from harrier_distill.retrieval_eval import (
     RetrievalTaskPaths,
     evaluate_retrieval_local,
@@ -14,16 +15,13 @@ from harrier_distill.retrieval_eval import (
 )
 from harrier_distill.sts import evaluate_sts_local
 
+MTEB_ENG_V2_STS = mteb_eng_v2_sts_task_names()
+
 STS_SUITES: dict[str, list[str]] = {
-    "en": ["STSBenchmark"],
+    "en": list(MTEB_ENG_V2_STS),
     "ko": ["KorSTS"],
-    "multilingual": ["STSBenchmark", "KorSTS"],
-    "extended": [
-        "STSBenchmark",
-        "KorSTS",
-        "STS22.v2",
-        "STSBenchmarkMultilingualSTS",
-    ],
+    "multilingual": [*MTEB_ENG_V2_STS, "KorSTS"],
+    "extended": [*MTEB_ENG_V2_STS, "KorSTS"],
 }
 
 RETRIEVAL_SUITES: dict[str, list[str]] = {
@@ -370,7 +368,7 @@ def evaluate_sts(
     max_length: int = 512,
 ) -> dict[str, Any]:
     """Run STS tasks via MTEB or local parquet and return per-task Spearman scores."""
-    task_names = tasks or ["STSBenchmark", "KorSTS"]
+    task_names = tasks or [*MTEB_ENG_V2_STS, "KorSTS"]
     if use_local_sts:
         if local_task_paths is None:
             raise ValueError("local_task_paths is required when use_local_sts=True")
@@ -382,10 +380,7 @@ def evaluate_sts(
             max_length=max_length,
         )
 
-    try:
-        mteb_tasks = mteb.get_tasks(tasks=task_names)
-    except Exception:
-        mteb_tasks = task_names
+    mteb_tasks = resolve_mteb_sts_task_objects(task_names)
 
     model = load_sentence_transformer(model_path)
     _apply_sts_prompts(model, task_names, prompt_name)
@@ -457,7 +452,7 @@ def compare_sts(
         if unsupported:
             raise ValueError(
                 f"Local STS mode does not support tasks: {', '.join(unsupported)}. "
-                "Use suite en/ko/multilingual, or run without --local-sts for extended."
+                "Run scripts/01_download_sts_local.py and set eval.local_sts.tasks in distill.yaml."
             )
 
     output_root = Path(output_dir) if output_dir else None

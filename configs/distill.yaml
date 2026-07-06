@@ -57,20 +57,65 @@ phases:
 
 eval:
   tasks:
+    - BIOSSES
+    - SICK-R
+    - STS12
+    - STS13
+    - STS14
+    - STS15
     - STSBenchmark
+    - STS17
+    - STS22.v2
     - KorSTS
   prompt_name: sts_query
   batch_size: 64
   compare_teacher: "microsoft/harrier-oss-v1-270m"
   suites:
-    en: [STSBenchmark]
+    en:
+      - BIOSSES
+      - SICK-R
+      - STS12
+      - STS13
+      - STS14
+      - STS15
+      - STSBenchmark
+      - STS17
+      - STS22.v2
     ko: [KorSTS]
-    multilingual: [STSBenchmark, KorSTS]
-    extended: [STSBenchmark, KorSTS, STS22.v2, STSBenchmarkMultilingualSTS]
+    multilingual:
+      - BIOSSES
+      - SICK-R
+      - STS12
+      - STS13
+      - STS14
+      - STS15
+      - STSBenchmark
+      - STS17
+      - STS22.v2
+      - KorSTS
+    extended:
+      - BIOSSES
+      - SICK-R
+      - STS12
+      - STS13
+      - STS14
+      - STS15
+      - STSBenchmark
+      - STS17
+      - STS22.v2
+      - KorSTS
   local_sts:
     split: test
     tasks:
+      BIOSSES: en/biosses_test.parquet
+      SICK-R: en/sickr_test.parquet
+      STS12: en/sts12_test.parquet
+      STS13: en/sts13_test.parquet
+      STS14: en/sts14_test.parquet
+      STS15: en/sts15_test.parquet
       STSBenchmark: en/stsbenchmark_test.parquet
+      STS17: en/sts17_en_en_test.parquet
+      STS22.v2: en/sts22_v2_en_test.parquet
       KorSTS: ko/korsts_test.parquet
     dev_splits:
       STSBenchmark: en/stsbenchmark_validation.parquet

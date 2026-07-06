@@ -12,7 +12,7 @@ Local (internet)                GPU (offline, 4x H100)
                                 02_generate_teacher_embeddings.py (EN, KO)
                                 03_train_distill_mse.py (EN → checkpoint_en)
                                 03_train_distill_mse.py (KO → checkpoint_final)
-                                04_eval_sts.py (STS-B + KorSTS, --local-sts offline)
+                                04_eval_sts.py (MTEB eng v2 STS + KorSTS, --local-sts offline)
 ```
 
 - **Prompt:** `sts_query` on all distillation and eval text
@@ -83,11 +83,29 @@ python scripts/01_download_sts_local.py --config configs/distill.yaml
 
 Outputs under `{local_data_root}/sts/`:
 
-- `en/stsbenchmark_test.parquet` (1,379 pairs)
-- `en/stsbenchmark_validation.parquet` (1,500 pairs, for debug proxy)
+**EN — MTEB(eng, v2) STS (9 tasks):**
+
+| Parquet | Pairs |
+|---------|------:|
+| `en/biosses_test.parquet` | 100 |
+| `en/sickr_test.parquet` | 9,927 |
+| `en/sts12_test.parquet` | 3,108 |
+| `en/sts13_test.parquet` | 1,500 |
+| `en/sts14_test.parquet` | 3,750 |
+| `en/sts15_test.parquet` | 3,000 |
+| `en/stsbenchmark_test.parquet` | 1,379 |
+| `en/sts17_en_en_test.parquet` | 250 |
+| `en/sts22_v2_en_test.parquet` | 197 |
+| `en/stsbenchmark_validation.parquet` | 1,500 (debug proxy) |
+
+**KO:**
+
 - `ko/korsts_test.parquet` (1,376 pairs)
 - `ko/korsts_valid.parquet` (1,465 pairs)
-- `manifest.json`
+
+Also writes `manifest.json`.
+
+Download EN only: `--lang en`. Download specific tasks: `--tasks STSBenchmark BIOSSES`.
 
 ## Step 2 — Migrate to GPU
 
@@ -178,7 +196,7 @@ python scripts/05_compare_sts.py --config configs/distill.yaml \
   --suite multilingual --local-sts
 ```
 
-Suites: `en` (STSBenchmark), `ko` (KorSTS), `multilingual` (both), `extended` (adds STS22.v2 + STSBenchmarkMultilingualSTS; online only).
+Suites: `en` (all 9 MTEB(eng, v2) STS tasks), `ko` (KorSTS), `multilingual` (EN + KO), `extended` (same as multilingual).
 
 ## Step 8 — Debug MSE vs STS gap
 

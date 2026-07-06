@@ -33,10 +33,14 @@ def download_sts_split(
     split: str,
     lang: str,
     task: str,
+    hf_subset: str | None = None,
 ) -> list[dict[str, Any]]:
     from datasets import load_dataset
 
-    dataset = load_dataset(hf_path, split=split)
+    if hf_subset:
+        dataset = load_dataset(hf_path, name=hf_subset, split=split)
+    else:
+        dataset = load_dataset(hf_path, split=split)
     rows: list[dict[str, Any]] = []
     for row in dataset:
         rows.append(

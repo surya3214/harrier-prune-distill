@@ -52,6 +52,31 @@ def get_phase_config(cfg: dict[str, Any], phase: str) -> dict[str, Any]:
     return phases[phase]
 
 
+LOSS_NAMES = ("mse", "cosine", "pairwise_mse")
+
+
+def get_loss_weights(cfg: dict[str, Any], phase: str) -> dict[str, float]:
+    """Merge training.losses with optional phases.<phase>.losses overrides."""
+    train_cfg = cfg.get("training", {})
+    base = dict(train_cfg.get("losses", {}))
+    if phase != "sts":
+        phase_cfg = cfg.get("phases", {}).get(phase, {})
+        base.update(phase_cfg.get("losses", {}))
+
+    weights = {name: float(base.get(name, 0.0)) for name in LOSS_NAMES}
+    if "mse" not in base and not any(base.get(name) for name in LOSS_NAMES):
+        weights["mse"] = 1.0
+
+    for name, value in weights.items():
+        if value < 0:
+            raise ValueError(f"loss weight training.losses.{name} must be non-negative, got {value}")
+
+    if sum(weights.values()) <= 0:
+        raise ValueError("at least one loss weight must be > 0")
+
+    return weights
+
+
 def resolve_retrieval_corpus_paths(cfg: dict[str, Any]) -> dict[str, Path]:
     paths = get_resolved_paths(cfg)
     root = paths.get("gpu_data_root") or paths.get("local_data_root")

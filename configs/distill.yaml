@@ -37,12 +37,21 @@ training:
   grad_clip: 1.0
   seed: 42
   prompt_name: sts_query
+  losses:
+    mse: 1.0
+    cosine: 0.0
+    pairwise_mse: 0.0
+  pairwise_triplets_per_batch: 64
 
 # Phase 2: retrieval distillation (see scripts/01_download_retrieval_local.py)
 phases:
   retrieval:
     query_prompt: web_search_query
     doc_prompt: null
+    losses:
+      mse: 1.0
+      cosine: 0.0
+      pairwise_mse: 0.0
     languages:
       - en
       - ko

@@ -9,6 +9,7 @@ paths:
   ko_corpus: ""              # e.g. {gpu_data_root}/ko/corpus.parquet
   en_embeddings: ""          # e.g. {output_dir}/embeddings/en_embeddings.parquet
   ko_embeddings: ""          # e.g. {output_dir}/embeddings/ko_embeddings.parquet
+  retrieval_eval_data_root: "" # e.g. {gpu_data_root}/retrieval_eval
   sts_data_root: ""            # e.g. {gpu_data_root}/sts
   en_sts_test: ""              # e.g. {sts_data_root}/en/stsbenchmark_test.parquet
   ko_sts_test: ""              # e.g. {sts_data_root}/ko/korsts_test.parquet
@@ -85,6 +86,13 @@ eval:
       MIRACLRetrieval:
         - eng-Latn
         - kor-Kore
+  local_retrieval:
+    split: dev
+    tasks:
+      MSMARCO: en/msmarco_dev
+      MIRACLRetrieval:
+        en: en/miracl_dev
+        ko: ko/miracl_dev
 
 debug:
   sample_size: 5000

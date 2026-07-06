@@ -11,7 +11,12 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from harrier_distill.config import get_resolved_paths, load_distill_config, require_path
+from harrier_distill.config import (
+    get_resolved_paths,
+    load_distill_config,
+    require_path,
+    resolve_retrieval_eval_paths,
+)
 from harrier_distill.eval import (
     _miracl_eval_subsets,
     compare_retrieval,
@@ -33,6 +38,17 @@ def parse_args() -> argparse.Namespace:
         default="en_ko",
         help="Retrieval task suite",
     )
+    parser.add_argument(
+        "--tasks",
+        nargs="+",
+        default=None,
+        help="Explicit MTEB task names (overrides --suite)",
+    )
+    parser.add_argument(
+        "--local-retrieval",
+        action="store_true",
+        help="Evaluate from local retrieval parquet (offline; no MTEB/HF download)",
+    )
     return parser.parse_args()
 
 
@@ -46,7 +62,7 @@ def main() -> None:
     output_root = Path(args.output_dir) if args.output_dir else require_path(paths, "output_dir")
     eval_dir = output_root / "eval" / "retrieval"
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    summary_path = eval_dir / f"compare_{timestamp}.json"
+    summary_path = eval_dir / f"compare_{args.suite}_{timestamp}.json"
 
     teacher_path = args.teacher or eval_cfg.get("compare_teacher", "microsoft/harrier-oss-v1-270m")
 
@@ -55,10 +71,14 @@ def main() -> None:
         student_path=args.student,
         baseline_path=args.baseline,
         suite=args.suite,
+        tasks=args.tasks,
         query_prompt=retrieval_cfg.get("query_prompt", "web_search_query"),
         batch_size=int(retrieval_cfg.get("batch_size", eval_cfg.get("batch_size", 64))),
         output_dir=eval_dir / "mteb_runs",
         miracl_subsets=_miracl_eval_subsets(retrieval_cfg.get("languages")),
+        use_local_retrieval=args.local_retrieval,
+        local_task_paths=resolve_retrieval_eval_paths(cfg) if args.local_retrieval else None,
+        max_length=int(cfg.get("data", {}).get("max_length", 512)),
     )
 
     print_retrieval_compare_summary(comparison)

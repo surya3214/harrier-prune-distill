@@ -47,6 +47,7 @@ paths:
   ko_retrieval_corpus: "/mnt/data/harrier-distill/retrieval/ko/corpus.parquet"
   en_retrieval_embeddings: "/mnt/data/harrier-distill/output/retrieval/embeddings/en_embeddings.parquet"
   ko_retrieval_embeddings: "/mnt/data/harrier-distill/output/retrieval/embeddings/ko_embeddings.parquet"
+  retrieval_eval_data_root: "/mnt/data/harrier-distill/retrieval_eval"
   retrieval_checkpoint_en: "/mnt/data/harrier-distill/output/retrieval/checkpoint_en"
   retrieval_checkpoint_final: "/mnt/data/harrier-distill/output/retrieval/checkpoint_final"
 ```
@@ -226,6 +227,7 @@ After STS distillation (`checkpoint_final`), recover retrieval with hard-negativ
 Local (internet)                         GPU (offline)
 ────────────────                         ─────────────
 01_download_retrieval_local.py  →        rsync retrieval/ corpora
+01_download_retrieval_eval_local.py →    rsync retrieval_eval/ benchmarks
                                          02_generate_teacher_embeddings.py --phase retrieval
                                          03_train_distill_mse.py --phase retrieval
                                          04_eval_retrieval.py / 05_compare_retrieval.py
@@ -254,6 +256,23 @@ python scripts/01_download_retrieval_local.py --config configs/distill.yaml
 
 Outputs `{local_data_root}/retrieval/{en,ko}/corpus.parquet` with `role` column (`query` | `doc`).
 
+### Download retrieval eval benchmarks (local, internet)
+
+For offline GPU eval (no MTEB/HF at eval time):
+
+```bash
+python scripts/01_download_retrieval_eval_local.py --config configs/distill.yaml
+```
+
+Outputs under `{local_data_root}/retrieval_eval/`:
+
+- `en/msmarco_dev/` — queries, corpus, qrels parquet (~3.5 GB; MSMARCO dev)
+- `en/miracl_dev/` — MIRACL EN dev
+- `ko/miracl_dev/` — MIRACL KO dev
+- `manifest.json`
+
+Config: [`configs/retrieval_eval_datasets.yaml`](configs/retrieval_eval_datasets.yaml). Set `paths.retrieval_eval_data_root` in `distill.yaml` (or rely on `gpu_data_root`).
+
 ### GPU training
 
 ```bash
@@ -266,6 +285,8 @@ bash scripts/run_gpu_retrieval_pipeline.sh
 
 ### Retrieval eval
 
+Online (MTEB downloads from HuggingFace):
+
 ```bash
 python scripts/04_eval_retrieval.py --config configs/distill.yaml \
   --model /path/to/retrieval/checkpoint_final --suite en_ko
@@ -274,7 +295,17 @@ python scripts/05_compare_retrieval.py --config configs/distill.yaml \
   --student /path/to/retrieval/checkpoint_final --suite en_ko
 ```
 
-Tasks: MTEB `MSMARCO` (EN) + `MIRACLRetrieval` (`en`, `ko` subsets).
+Offline on GPU (uses local retrieval parquet, no internet):
+
+```bash
+python scripts/04_eval_retrieval.py --config configs/distill.yaml \
+  --model /path/to/retrieval/checkpoint_final --suite en_ko --local-retrieval
+
+python scripts/05_compare_retrieval.py --config configs/distill.yaml \
+  --student /path/to/retrieval/checkpoint_final --suite en_ko --local-retrieval
+```
+
+Tasks: MTEB `MSMARCO` (EN dev) + `MIRACLRetrieval` (`en`, `ko` dev subsets). Suites: `en`, `ko`, `en_ko`.
 
 ## Fallback ladder
 
@@ -292,9 +323,11 @@ configs/
   distill.yaml              # paths + training hyperparams (you populate)
   datasets.yaml             # STS phase HF dataset definitions
   retrieval_datasets.yaml   # retrieval phase HF dataset definitions (EN/KO)
+  retrieval_eval_datasets.yaml  # retrieval eval benchmark download (MSMARCO, MIRACL)
 scripts/
   01_download_local.py
   01_download_retrieval_local.py
+  01_download_retrieval_eval_local.py
   01_download_sts_local.py
   02_generate_teacher_embeddings.py
   03_train_distill_mse.py
@@ -306,5 +339,5 @@ scripts/
   run_gpu_pipeline.sh
   run_gpu_retrieval_pipeline.sh
 src/harrier_distill/
-  config.py data.py model.py eval.py retrieval.py sts.py debug.py distributed.py text.py
+  config.py data.py model.py eval.py retrieval.py retrieval_eval.py sts.py debug.py distributed.py text.py
 ```

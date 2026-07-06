@@ -1,0 +1,72 @@
+# Retrieval benchmark definitions for scripts/01_download_retrieval_eval_local.py
+# Run on local infra (internet). Outputs parquet under {local_data_root}/retrieval_eval/
+
+MSMARCO:
+  task: MSMARCO
+  lang: en
+  split: dev
+  output_dir: en/msmarco_dev
+  hf_path: mteb/msmarco
+  queries:
+    config: queries
+    split: queries
+    id_column: _id
+    text_column: text
+  corpus:
+    config: corpus
+    split: corpus
+    id_column: _id
+    text_column: text
+    title_column: title
+  qrels:
+    config: default
+    split: dev
+    query_id_column: query-id
+    doc_id_column: corpus-id
+    score_column: score
+
+MIRACLRetrieval:
+  task: MIRACLRetrieval
+  hf_path: mteb/MIRACLRetrieval
+  split: dev
+  languages:
+    en:
+      lang: en
+      output_dir: en/miracl_dev
+      queries:
+        config: en-queries
+        split: dev
+        id_column: _id
+        text_column: text
+      corpus:
+        config: en-corpus
+        split: dev
+        id_column: _id
+        text_column: text
+        title_column: title
+      qrels:
+        config: en-qrels
+        split: dev
+        query_id_column: query-id
+        doc_id_column: corpus-id
+        score_column: score
+    ko:
+      lang: ko
+      output_dir: ko/miracl_dev
+      queries:
+        config: ko-queries
+        split: dev
+        id_column: _id
+        text_column: text
+      corpus:
+        config: ko-corpus
+        split: dev
+        id_column: _id
+        text_column: text
+        title_column: title
+      qrels:
+        config: ko-qrels
+        split: dev
+        query_id_column: query-id
+        doc_id_column: corpus-id
+        score_column: score

@@ -179,7 +179,7 @@ ja:
       text_columns: [premise, hypothesis]
       target_samples: 150000
     - name: jsick
-      hf_path: hpprc/jsick
+      hf_path: mteb/JSICK
       split: train
       streaming: false
       text_columns: [sentence1, sentence2]
@@ -223,7 +223,7 @@ pt:
       hf_path: nilc-nlp/assin2
       split: train
       streaming: false
-      text_columns: [sentence1, sentence2]
+      text_columns: [premise, hypothesis]
       target_samples: 50000
       optional: true
 

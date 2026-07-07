@@ -14,6 +14,48 @@ from harrier_distill.text import normalize_text
 MULTILINGUAL_NLI_HF_PATH = "MoritzLaurer/multilingual-NLI-26lang-2mil7"
 MULTILINGUAL_NLI_SUBSOURCES = ("mnli", "fever", "anli", "wanli", "ling")
 
+LEGACY_DATASET_HINTS: dict[str, str] = {
+    "hpprc/jsick": "Use hf_path: mteb/JSICK (Parquet-native MTEB mirror).",
+    "mc4": "Use hf_path: allenai/c4 with the same language config (e.g. config: ja).",
+}
+
+
+def load_hf_source_dataset(source_cfg: dict[str, Any], *, split: str):
+    """Load a Hugging Face dataset for a ``datasets.yaml`` source entry."""
+    from datasets import load_dataset
+
+    hf_path = source_cfg["hf_path"]
+    config = source_cfg.get("config")
+    streaming = source_cfg.get("streaming", False)
+    trust_remote_code = bool(source_cfg.get("trust_remote_code", False))
+
+    kwargs: dict[str, Any] = {"path": hf_path, "split": split, "streaming": streaming}
+    if config:
+        kwargs["name"] = config
+    if trust_remote_code:
+        kwargs["trust_remote_code"] = True
+
+    try:
+        return load_dataset(**kwargs)
+    except (RuntimeError, ValueError) as exc:
+        message = str(exc)
+        legacy_script = (
+            "Dataset scripts are no longer supported" in message
+            or "contains custom code" in message
+        )
+        if legacy_script:
+            hint = LEGACY_DATASET_HINTS.get(hf_path, "Pick a Parquet-native dataset on Hugging Face Hub.")
+            raise RuntimeError(
+                f"{message} Dataset '{hf_path}' uses a legacy loading script. {hint}"
+            ) from exc
+        if "Bad split" in message or 'Unknown split "train"' in message:
+            raise ValueError(
+                f"Dataset '{hf_path}' does not have split '{split}'. "
+                f"Set source.splits explicitly or use filter_lang with multilingual-NLI. "
+                f"Original error: {message}"
+            ) from exc
+        raise
+
 
 def resolve_hf_source_splits(source_cfg: dict[str, Any], lang: str) -> list[str]:
     """Resolve HF split name(s) for a dataset source config.

@@ -30,6 +30,7 @@ from harrier_distill.data import (
     append_corpus_shard,
     corpus_row,
     ensure_dir,
+    load_hf_source_dataset,
     merge_parquet_shards,
     resolve_hf_source_splits,
 )
@@ -102,33 +103,7 @@ def reservoir_id(lang: str, source: str, text: str) -> str:
 
 
 def stream_hf_dataset(source_cfg: dict, *, split: str):
-    from datasets import load_dataset
-
-    hf_path = source_cfg["hf_path"]
-    config = source_cfg.get("config")
-    streaming = source_cfg.get("streaming", False)
-
-    kwargs = {"path": hf_path, "split": split, "streaming": streaming}
-    if config:
-        kwargs["name"] = config
-
-    try:
-        return load_dataset(**kwargs)
-    except (RuntimeError, ValueError) as exc:
-        message = str(exc)
-        if "Dataset scripts are no longer supported" in message:
-            hints = {
-                "mc4": "Use hf_path: allenai/c4 with the same language config (e.g. config: ko).",
-            }
-            hint = hints.get(hf_path, "Pick a Parquet-native dataset on Hugging Face Hub.")
-            raise RuntimeError(f"{message} Dataset '{hf_path}' uses a legacy loading script. {hint}") from exc
-        if "Bad split" in message or 'Unknown split "train"' in message:
-            raise ValueError(
-                f"Dataset '{hf_path}' does not have split '{split}'. "
-                f"Set source.splits explicitly or use filter_lang with multilingual-NLI. "
-                f"Original error: {message}"
-            ) from exc
-        raise
+    return load_hf_source_dataset(source_cfg, split=split)
 
 
 def iter_hf_rows(source_cfg: dict, lang: str):
@@ -156,44 +131,44 @@ def collect_from_source(
     if len(collected_rows) >= lang_target:
         return 0
 
+    split_names = resolve_hf_source_splits(source_cfg, lang)
+    split_label = split_names[0] if len(split_names) == 1 else f"{len(split_names)} splits"
+    progress = tqdm(total=source_target, desc=f"{lang}/{name} ({split_label})")
+    added = 0
+
     try:
         dataset = iter_hf_rows(source_cfg, lang)
+        for row in dataset:
+            if len(collected_rows) >= lang_target or added >= source_target:
+                break
+            if not passes_lang_filter(row, source_cfg):
+                continue
+
+            texts = text_from_row(row, text_column, text_columns)
+            for text in texts:
+                if len(collected_rows) >= lang_target or added >= source_target:
+                    break
+                if not dedupe.add_if_new(text):
+                    continue
+                record = corpus_row(
+                    row_id=reservoir_id(lang, name, text),
+                    text=text,
+                    lang=lang,
+                    source=name,
+                    min_chars=min_chars,
+                    normalize_whitespace=True,
+                )
+                if record is None:
+                    continue
+                collected_rows.append(record)
+                added += 1
+                progress.update(1)
     except Exception as exc:
+        progress.close()
         if optional:
             print(f"[WARN] Skipping optional source {name}: {exc}")
             return 0
         raise
-
-    added = 0
-    split_names = resolve_hf_source_splits(source_cfg, lang)
-    split_label = split_names[0] if len(split_names) == 1 else f"{len(split_names)} splits"
-    progress = tqdm(total=source_target, desc=f"{lang}/{name} ({split_label})")
-
-    for row in dataset:
-        if len(collected_rows) >= lang_target or added >= source_target:
-            break
-        if not passes_lang_filter(row, source_cfg):
-            continue
-
-        texts = text_from_row(row, text_column, text_columns)
-        for text in texts:
-            if len(collected_rows) >= lang_target or added >= source_target:
-                break
-            if not dedupe.add_if_new(text):
-                continue
-            record = corpus_row(
-                row_id=reservoir_id(lang, name, text),
-                text=text,
-                lang=lang,
-                source=name,
-                min_chars=min_chars,
-                normalize_whitespace=True,
-            )
-            if record is None:
-                continue
-            collected_rows.append(record)
-            added += 1
-            progress.update(1)
 
     progress.close()
     print(f"  {lang}/{name}: added {added:,} rows")

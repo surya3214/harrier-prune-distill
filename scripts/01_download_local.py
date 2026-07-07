@@ -25,7 +25,14 @@ from harrier_distill.config import (
     should_skip_download,
     write_download_manifest,
 )
-from harrier_distill.data import append_corpus_shard, corpus_row, ensure_dir, merge_parquet_shards
+from harrier_distill.data import (
+    MULTILINGUAL_NLI_HF_PATH,
+    append_corpus_shard,
+    corpus_row,
+    ensure_dir,
+    merge_parquet_shards,
+    resolve_hf_source_splits,
+)
 from harrier_distill.text import normalize_text
 
 
@@ -79,6 +86,9 @@ def passes_lang_filter(row: dict, source_cfg: dict) -> bool:
     filter_lang = source_cfg.get("filter_lang")
     if not filter_lang:
         return True
+    hf_path = source_cfg.get("hf_path", "")
+    if hf_path == MULTILINGUAL_NLI_HF_PATH or source_cfg.get("split_resolver") == "multilingual_nli":
+        return True
     filter_column = source_cfg.get("filter_column", "language")
     value = row.get(filter_column)
     if value is None:
@@ -91,12 +101,11 @@ def reservoir_id(lang: str, source: str, text: str) -> str:
     return f"{lang}_{source}_{digest}"
 
 
-def stream_hf_dataset(source_cfg: dict):
+def stream_hf_dataset(source_cfg: dict, *, split: str):
     from datasets import load_dataset
 
     hf_path = source_cfg["hf_path"]
     config = source_cfg.get("config")
-    split = source_cfg.get("split", "train")
     streaming = source_cfg.get("streaming", False)
 
     kwargs = {"path": hf_path, "split": split, "streaming": streaming}
@@ -105,7 +114,7 @@ def stream_hf_dataset(source_cfg: dict):
 
     try:
         return load_dataset(**kwargs)
-    except RuntimeError as exc:
+    except (RuntimeError, ValueError) as exc:
         message = str(exc)
         if "Dataset scripts are no longer supported" in message:
             hints = {
@@ -113,7 +122,20 @@ def stream_hf_dataset(source_cfg: dict):
             }
             hint = hints.get(hf_path, "Pick a Parquet-native dataset on Hugging Face Hub.")
             raise RuntimeError(f"{message} Dataset '{hf_path}' uses a legacy loading script. {hint}") from exc
+        if "Bad split" in message or 'Unknown split "train"' in message:
+            raise ValueError(
+                f"Dataset '{hf_path}' does not have split '{split}'. "
+                f"Set source.splits explicitly or use filter_lang with multilingual-NLI. "
+                f"Original error: {message}"
+            ) from exc
         raise
+
+
+def iter_hf_rows(source_cfg: dict, lang: str):
+    from itertools import chain
+
+    splits = resolve_hf_source_splits(source_cfg, lang)
+    return chain.from_iterable(stream_hf_dataset(source_cfg, split=split_name) for split_name in splits)
 
 
 def collect_from_source(
@@ -135,7 +157,7 @@ def collect_from_source(
         return 0
 
     try:
-        dataset = stream_hf_dataset(source_cfg)
+        dataset = iter_hf_rows(source_cfg, lang)
     except Exception as exc:
         if optional:
             print(f"[WARN] Skipping optional source {name}: {exc}")
@@ -143,7 +165,9 @@ def collect_from_source(
         raise
 
     added = 0
-    progress = tqdm(total=source_target, desc=f"{lang}/{name}")
+    split_names = resolve_hf_source_splits(source_cfg, lang)
+    split_label = split_names[0] if len(split_names) == 1 else f"{len(split_names)} splits"
+    progress = tqdm(total=source_target, desc=f"{lang}/{name} ({split_label})")
 
     for row in dataset:
         if len(collected_rows) >= lang_target or added >= source_target:

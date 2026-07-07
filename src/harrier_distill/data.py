@@ -11,6 +11,28 @@ import pyarrow.parquet as pq
 
 from harrier_distill.text import normalize_text
 
+MULTILINGUAL_NLI_HF_PATH = "MoritzLaurer/multilingual-NLI-26lang-2mil7"
+MULTILINGUAL_NLI_SUBSOURCES = ("mnli", "fever", "anli", "wanli", "ling")
+
+
+def resolve_hf_source_splits(source_cfg: dict[str, Any], lang: str) -> list[str]:
+    """Resolve HF split name(s) for a dataset source config.
+
+    MoritzLaurer/multilingual-NLI-26lang-2mil7 has no ``train`` split; it exposes
+    per-language subsets such as ``de_mnli``, ``ko_fever``, etc.
+    """
+    explicit = source_cfg.get("splits")
+    if explicit:
+        return [str(split) for split in explicit]
+
+    hf_path = source_cfg.get("hf_path", "")
+    filter_lang = source_cfg.get("filter_lang", lang)
+    if hf_path == MULTILINGUAL_NLI_HF_PATH or source_cfg.get("split_resolver") == "multilingual_nli":
+        subsources = source_cfg.get("nli_subsources", MULTILINGUAL_NLI_SUBSOURCES)
+        return [f"{filter_lang}_{sub}" for sub in subsources]
+
+    return [str(source_cfg.get("split", "train"))]
+
 
 def ensure_dir(path: Path) -> Path:
     path.mkdir(parents=True, exist_ok=True)

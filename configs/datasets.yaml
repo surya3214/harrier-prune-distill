@@ -13,7 +13,7 @@ en:
       split: train
       streaming: true
       text_column: text
-      target_samples: 700000
+      target_samples: 850000
     - name: all_nli
       hf_path: sentence-transformers/all-nli
       config: pair
@@ -22,15 +22,6 @@ en:
       text_columns:
         - anchor
         - positive
-      target_samples: 150000
-    - name: multilingual_nli
-      hf_path: MoritzLaurer/multilingual-NLI-26lang-2mil7
-      split: train
-      streaming: true
-      filter_lang: en
-      text_columns:
-        - premise
-        - hypothesis
       target_samples: 150000
 
 ko:
@@ -54,7 +45,6 @@ ko:
       target_samples: 50000
     - name: multilingual_nli
       hf_path: MoritzLaurer/multilingual-NLI-26lang-2mil7
-      split: train
       streaming: true
       filter_lang: ko
       text_columns:
@@ -82,7 +72,6 @@ ar:
       target_samples: 850000
     - name: multilingual_nli
       hf_path: MoritzLaurer/multilingual-NLI-26lang-2mil7
-      split: train
       streaming: true
       filter_lang: ar
       text_columns: [premise, hypothesis]
@@ -100,7 +89,6 @@ de:
       target_samples: 850000
     - name: multilingual_nli
       hf_path: MoritzLaurer/multilingual-NLI-26lang-2mil7
-      split: train
       streaming: true
       filter_lang: de
       text_columns: [premise, hypothesis]
@@ -118,7 +106,6 @@ es:
       target_samples: 850000
     - name: multilingual_nli
       hf_path: MoritzLaurer/multilingual-NLI-26lang-2mil7
-      split: train
       streaming: true
       filter_lang: es
       text_columns: [premise, hypothesis]
@@ -136,7 +123,6 @@ fr:
       target_samples: 850000
     - name: multilingual_nli
       hf_path: MoritzLaurer/multilingual-NLI-26lang-2mil7
-      split: train
       streaming: true
       filter_lang: fr
       text_columns: [premise, hypothesis]
@@ -154,7 +140,6 @@ hi:
       target_samples: 850000
     - name: multilingual_nli
       hf_path: MoritzLaurer/multilingual-NLI-26lang-2mil7
-      split: train
       streaming: true
       filter_lang: hi
       text_columns: [premise, hypothesis]
@@ -172,7 +157,6 @@ id:
       target_samples: 850000
     - name: multilingual_nli
       hf_path: MoritzLaurer/multilingual-NLI-26lang-2mil7
-      split: train
       streaming: true
       filter_lang: id
       text_columns: [premise, hypothesis]
@@ -190,7 +174,6 @@ ja:
       target_samples: 800000
     - name: multilingual_nli
       hf_path: MoritzLaurer/multilingual-NLI-26lang-2mil7
-      split: train
       streaming: true
       filter_lang: ja
       text_columns: [premise, hypothesis]
@@ -215,7 +198,6 @@ it:
       target_samples: 850000
     - name: multilingual_nli
       hf_path: MoritzLaurer/multilingual-NLI-26lang-2mil7
-      split: train
       streaming: true
       filter_lang: it
       text_columns: [premise, hypothesis]
@@ -233,7 +215,6 @@ pt:
       target_samples: 800000
     - name: multilingual_nli
       hf_path: MoritzLaurer/multilingual-NLI-26lang-2mil7
-      split: train
       streaming: true
       filter_lang: pt
       text_columns: [premise, hypothesis]
@@ -258,7 +239,6 @@ ru:
       target_samples: 850000
     - name: multilingual_nli
       hf_path: MoritzLaurer/multilingual-NLI-26lang-2mil7
-      split: train
       streaming: true
       filter_lang: ru
       text_columns: [premise, hypothesis]
@@ -273,14 +253,7 @@ th:
       split: train
       streaming: true
       text_column: text
-      target_samples: 850000
-    - name: multilingual_nli
-      hf_path: MoritzLaurer/multilingual-NLI-26lang-2mil7
-      split: train
-      streaming: true
-      filter_lang: th
-      text_columns: [premise, hypothesis]
-      target_samples: 150000
+      target_samples: 1000000
 
 vi:
   target_samples: 1000000
@@ -294,7 +267,6 @@ vi:
       target_samples: 850000
     - name: multilingual_nli
       hf_path: MoritzLaurer/multilingual-NLI-26lang-2mil7
-      split: train
       streaming: true
       filter_lang: vi
       text_columns: [premise, hypothesis]
@@ -312,7 +284,6 @@ zh:
       target_samples: 850000
     - name: multilingual_nli
       hf_path: MoritzLaurer/multilingual-NLI-26lang-2mil7
-      split: train
       streaming: true
       filter_lang: zh
       text_columns: [premise, hypothesis]
@@ -330,7 +301,6 @@ pl:
       target_samples: 850000
     - name: multilingual_nli
       hf_path: MoritzLaurer/multilingual-NLI-26lang-2mil7
-      split: train
       streaming: true
       filter_lang: pl
       text_columns: [premise, hypothesis]

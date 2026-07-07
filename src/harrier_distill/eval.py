@@ -17,17 +17,58 @@ from harrier_distill.sts import evaluate_sts_local
 
 MTEB_ENG_V2_STS = mteb_eng_v2_sts_task_names()
 
+MTEB_LOCALE_TO_MIRACL: dict[str, str] = {
+    "eng-Latn": "en",
+    "ara-Arab": "ar",
+    "deu-Latn": "de",
+    "spa-Latn": "es",
+    "fra-Latn": "fr",
+    "hin-Deva": "hi",
+    "ind-Latn": "id",
+    "jpn-Jpan": "ja",
+    "kor-Kore": "ko",
+    "rus-Cyrl": "ru",
+    "tha-Thai": "th",
+    "zho-Hans": "zh",
+    "en": "en",
+    "ko": "ko",
+    "ar": "ar",
+    "de": "de",
+    "es": "es",
+    "fr": "fr",
+    "hi": "hi",
+    "id": "id",
+    "ja": "ja",
+    "ru": "ru",
+    "th": "th",
+    "zh": "zh",
+}
+
 STS_SUITES: dict[str, list[str]] = {
     "en": list(MTEB_ENG_V2_STS),
     "ko": ["KorSTS"],
-    "multilingual": [*MTEB_ENG_V2_STS, "KorSTS"],
-    "extended": [*MTEB_ENG_V2_STS, "KorSTS"],
+    "wave1": ["STSBenchmark", "STS22.v2", "KorSTS", "JSICK"],
+    "wave2": ["ASSIN2", "STS22.v2"],
+    "wave3": ["STS22.v2"],
+    "all16": [
+        *MTEB_ENG_V2_STS,
+        "KorSTS",
+        "JSICK",
+        "ASSIN2",
+    ],
+    "multilingual": [*MTEB_ENG_V2_STS, "KorSTS", "JSICK", "ASSIN2"],
+    "extended": [*MTEB_ENG_V2_STS, "KorSTS", "JSICK", "ASSIN2"],
 }
 
 RETRIEVAL_SUITES: dict[str, list[str]] = {
     "en": ["MSMARCO"],
     "ko": ["MIRACLRetrieval"],
     "en_ko": ["MSMARCO", "MIRACLRetrieval"],
+    "wave1": ["MIRACLRetrieval"],
+    "wave2": [],
+    "wave3": ["BEIR-PL"],
+    "all16": ["MSMARCO", "MIRACLRetrieval", "BEIR-PL"],
+    "miracl12": ["MIRACLRetrieval"],
 }
 
 
@@ -37,7 +78,10 @@ def get_retrieval_tasks_for_suite(suite: str, *, tasks: list[str] | None = None)
     if suite not in RETRIEVAL_SUITES:
         available = ", ".join(sorted(RETRIEVAL_SUITES))
         raise ValueError(f"Unknown retrieval suite '{suite}'. Available: {available}")
-    return list(RETRIEVAL_SUITES[suite])
+    task_names = list(RETRIEVAL_SUITES[suite])
+    if not task_names:
+        raise ValueError(f"Retrieval suite '{suite}' has no tasks configured")
+    return task_names
 
 
 def _apply_retrieval_prompts(model, task_names: list[str], prompt_name: str) -> None:
@@ -58,18 +102,11 @@ def _miracl_eval_subsets(languages_cfg: dict[str, Any] | list[str] | None) -> li
     if languages_cfg is None:
         return ["en", "ko"]
     if isinstance(languages_cfg, list):
-        mapping = {
-            "eng-Latn": "en",
-            "kor-Kore": "ko",
-            "en": "en",
-            "ko": "ko",
-        }
-        return [mapping.get(lang, lang) for lang in languages_cfg]
+        return [MTEB_LOCALE_TO_MIRACL.get(lang, lang) for lang in languages_cfg]
     miracl_langs = languages_cfg.get("MIRACLRetrieval")
     if miracl_langs is None:
         return ["en", "ko"]
-    mapping = {"eng-Latn": "en", "kor-Kore": "ko", "en": "en", "ko": "ko"}
-    return [mapping.get(lang, lang) for lang in miracl_langs]
+    return [MTEB_LOCALE_TO_MIRACL.get(lang, lang) for lang in miracl_langs]
 
 
 def _filter_local_retrieval_paths(

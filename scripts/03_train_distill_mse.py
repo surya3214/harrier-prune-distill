@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import shutil
 import sys
 from pathlib import Path
 
@@ -22,12 +23,18 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from harrier_distill.config import (
     get_loss_weights,
+    get_num_epochs,
     get_phase_config,
+    get_previous_lang,
     get_resolved_paths,
+    get_training_order,
     load_distill_config,
+    parse_lang_list,
     require_path,
-    resolve_retrieval_checkpoint_paths,
-    resolve_retrieval_embedding_paths,
+    resolve_embedding_path,
+    resolve_output_root,
+    resolve_retrieval_checkpoint_path,
+    resolve_sts_checkpoint_path,
 )
 from harrier_distill.data import CachedEmbeddingDataset, ensure_dir
 from harrier_distill.distributed import barrier, cleanup_distributed, init_distributed, is_main_process
@@ -44,12 +51,12 @@ from harrier_distill.model import encode_training_batch_by_role, encode_with_pro
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default=str(PROJECT_ROOT / "configs" / "distill.yaml"))
-    parser.add_argument("--lang", choices=["en", "ko"], required=True)
+    parser.add_argument("--lang", required=True, help="Language code (one per torchrun invocation)")
     parser.add_argument("--phase", choices=["sts", "retrieval"], default="sts")
     parser.add_argument("--embeddings", default=None, help="Override cached embeddings parquet")
     parser.add_argument("--init-model", default=None, help="Override student init checkpoint")
     parser.add_argument("--output", default=None, help="Override output checkpoint directory")
-    parser.add_argument("--resume", default=None, help="Resume checkpoint (e.g. checkpoint_en for KO step)")
+    parser.add_argument("--resume", default=None, help="Resume checkpoint path override")
     return parser.parse_args()
 
 
@@ -70,46 +77,92 @@ def save_checkpoint(model: SentenceTransformer, output_dir: Path, rank: int) -> 
     model.save(str(output_dir))
 
 
+def save_legacy_checkpoints(
+    model: SentenceTransformer,
+    *,
+    rank: int,
+    cfg: dict,
+    lang: str,
+    phase: str,
+    checkpoint_dir: Path,
+) -> None:
+    if not is_main_process(rank):
+        return
+    output_root = resolve_output_root(cfg)
+    order = get_training_order()
+    save_checkpoint(model, checkpoint_dir, rank)
+
+    if phase == "sts":
+        if lang == "en":
+            legacy_en = output_root / "checkpoint_en"
+            if legacy_en.resolve() != checkpoint_dir.resolve():
+                if legacy_en.exists():
+                    shutil.rmtree(legacy_en)
+                shutil.copytree(checkpoint_dir, legacy_en)
+        if lang == order[-1]:
+            legacy_final = output_root / "checkpoint_final"
+            if legacy_final.resolve() != checkpoint_dir.resolve():
+                if legacy_final.exists():
+                    shutil.rmtree(legacy_final)
+                shutil.copytree(checkpoint_dir, legacy_final)
+    else:
+        retrieval_root = output_root / "retrieval"
+        if lang == "en":
+            legacy_en = retrieval_root / "checkpoint_en"
+            if legacy_en.resolve() != checkpoint_dir.resolve():
+                if legacy_en.exists():
+                    shutil.rmtree(legacy_en)
+                shutil.copytree(checkpoint_dir, legacy_en)
+        if lang == order[-1]:
+            legacy_final = retrieval_root / "checkpoint_final"
+            if legacy_final.resolve() != checkpoint_dir.resolve():
+                if legacy_final.exists():
+                    shutil.rmtree(legacy_final)
+                shutil.copytree(checkpoint_dir, legacy_final)
+
+
 def resolve_training_paths(args: argparse.Namespace, cfg: dict, paths: dict) -> tuple[Path, Path, Path]:
     output_root = require_path(paths, "output_dir")
+    langs = parse_lang_list(args.lang)
+    if len(langs) != 1:
+        raise ValueError("Specify exactly one --lang per torchrun invocation")
+    lang = langs[0]
 
     if args.phase == "retrieval":
-        embedding_paths = resolve_retrieval_embedding_paths(cfg)
-        checkpoint_paths = resolve_retrieval_checkpoint_paths(cfg)
-        embeddings_path = Path(args.embeddings) if args.embeddings else embedding_paths[args.lang]
-        if args.output:
-            checkpoint_dir = Path(args.output)
-        else:
-            checkpoint_dir = checkpoint_paths["en"] if args.lang == "en" else checkpoint_paths["final"]
-
-        if args.init_model:
-            init_path = Path(args.init_model)
-        elif args.lang == "ko":
-            resume_path = Path(args.resume) if args.resume else checkpoint_paths["en"]
-            init_path = resume_path if resume_path.exists() else (output_root / "checkpoint_final")
-            if not init_path.exists():
-                init_path = require_path(paths, "student_model")
-        else:
-            sts_final = output_root / "checkpoint_final"
-            init_path = sts_final if sts_final.exists() else require_path(paths, "student_model")
-
-        return embeddings_path, checkpoint_dir, init_path
-
-    embeddings_key = f"{args.lang}_embeddings"
-    embeddings_path = Path(args.embeddings) if args.embeddings else require_path(paths, embeddings_key)
-    if args.output:
-        checkpoint_dir = Path(args.output)
+        embeddings_path = (
+            Path(args.embeddings) if args.embeddings else resolve_embedding_path(cfg, lang, phase="retrieval")
+        )
+        checkpoint_dir = (
+            Path(args.output) if args.output else resolve_retrieval_checkpoint_path(cfg, lang)
+        )
     else:
-        checkpoint_name = "checkpoint_en" if args.lang == "en" else "checkpoint_final"
-        checkpoint_dir = output_root / checkpoint_name
+        embeddings_path = Path(args.embeddings) if args.embeddings else resolve_embedding_path(cfg, lang, phase="sts")
+        checkpoint_dir = Path(args.output) if args.output else resolve_sts_checkpoint_path(cfg, lang)
 
     if args.init_model:
         init_path = Path(args.init_model)
-    elif args.lang == "ko":
-        resume_path = Path(args.resume) if args.resume else (output_root / "checkpoint_en")
-        init_path = resume_path if resume_path.exists() else require_path(paths, "student_model")
+    elif args.resume:
+        init_path = Path(args.resume)
     else:
-        init_path = require_path(paths, "student_model")
+        prev = get_previous_lang(lang)
+        if args.phase == "retrieval":
+            if prev:
+                prev_ckpt = resolve_retrieval_checkpoint_path(cfg, prev)
+                init_path = prev_ckpt if prev_ckpt.exists() else resolve_sts_checkpoint_path(cfg, prev)
+            else:
+                legacy = output_root / "checkpoint_final"
+                sts_last = resolve_sts_checkpoint_path(cfg, get_training_order()[-1])
+                if legacy.exists():
+                    init_path = legacy
+                elif sts_last.exists():
+                    init_path = sts_last
+                else:
+                    init_path = require_path(paths, "student_model")
+        elif prev:
+            prev_ckpt = resolve_sts_checkpoint_path(cfg, prev)
+            init_path = prev_ckpt if prev_ckpt.exists() else require_path(paths, "student_model")
+        else:
+            init_path = require_path(paths, "student_model")
 
     return embeddings_path, checkpoint_dir, init_path
 
@@ -198,22 +251,21 @@ def main() -> None:
     paths = get_resolved_paths(cfg)
     data_cfg = cfg.get("data", {})
     train_cfg = cfg.get("training", {})
+    lang = parse_lang_list(args.lang)[0]
 
     embeddings_path, checkpoint_dir, init_path = resolve_training_paths(args, cfg, paths)
     loss_weights = get_loss_weights(cfg, args.phase)
+    num_epochs = get_num_epochs(cfg, lang, args.phase)
 
     if args.phase == "retrieval":
         phase_cfg = get_phase_config(cfg, "retrieval")
         query_prompt = phase_cfg.get("query_prompt", "web_search_query")
         doc_prompt = phase_cfg.get("doc_prompt")
         prompt_name = query_prompt
-        epoch_key = "num_epochs_retrieval_en" if args.lang == "en" else "num_epochs_retrieval_ko"
-        num_epochs = int(phase_cfg.get(epoch_key, train_cfg.get("num_epochs_en" if args.lang == "en" else "num_epochs_ko", 1)))
     else:
         query_prompt = train_cfg.get("prompt_name", "sts_query")
         doc_prompt = None
         prompt_name = query_prompt
-        num_epochs = int(train_cfg.get("num_epochs_en" if args.lang == "en" else "num_epochs_ko", 1))
 
     batch_size = int(train_cfg.get("train_batch_size_per_gpu", 256))
     pairwise_triplets_per_batch = int(train_cfg.get("pairwise_triplets_per_batch", 64))
@@ -229,7 +281,9 @@ def main() -> None:
 
     if is_main_process(rank):
         print(f"Phase: {args.phase}")
+        print(f"Language: {lang}")
         print(f"Loss weights: {loss_weights}")
+        print(f"Epochs: {num_epochs}")
         print(f"Loading cached embeddings: {embeddings_path}")
 
     role_column = "role" if args.phase == "retrieval" else None
@@ -319,7 +373,7 @@ def main() -> None:
 
         progress = tqdm(
             step_iterable,
-            desc=f"train-{args.phase}-{args.lang}-epoch{epoch + 1}",
+            desc=f"train-{args.phase}-{lang}-epoch{epoch + 1}",
             disable=not is_main_process(rank),
         )
         for step_idx, batch in enumerate(progress):
@@ -400,12 +454,19 @@ def main() -> None:
                 progress.set_postfix(postfix)
 
     barrier()
-    save_checkpoint(raw_model, checkpoint_dir, rank)
+    save_legacy_checkpoints(
+        raw_model,
+        rank=rank,
+        cfg=cfg,
+        lang=lang,
+        phase=args.phase,
+        checkpoint_dir=checkpoint_dir,
+    )
 
     if is_main_process(rank):
         metrics = {
             "phase": args.phase,
-            "lang": args.lang,
+            "lang": lang,
             "epochs": num_epochs,
             "global_steps": global_step,
             "avg_loss": running_totals["total"] / max(global_step, 1),

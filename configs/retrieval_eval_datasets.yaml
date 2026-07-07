@@ -25,6 +25,23 @@ MSMARCO:
     doc_id_column: corpus-id
     score_column: score
 
+miracl_queries_defaults: &miracl_queries_defaults
+  split: dev
+  id_column: _id
+  text_column: text
+
+miracl_corpus_defaults: &miracl_corpus_defaults
+  split: dev
+  id_column: _id
+  text_column: text
+  title_column: title
+
+miracl_qrels_defaults: &miracl_qrels_defaults
+  split: dev
+  query_id_column: query-id
+  doc_id_column: corpus-id
+  score_column: score
+
 MIRACLRetrieval:
   task: MIRACLRetrieval
   hf_path: mteb/MIRACLRetrieval
@@ -34,39 +51,167 @@ MIRACLRetrieval:
       lang: en
       output_dir: en/miracl_dev
       queries:
+        <<: *miracl_queries_defaults
         config: en-queries
-        split: dev
-        id_column: _id
-        text_column: text
       corpus:
+        <<: *miracl_corpus_defaults
         config: en-corpus
-        split: dev
-        id_column: _id
-        text_column: text
-        title_column: title
       qrels:
+        <<: *miracl_qrels_defaults
         config: en-qrels
-        split: dev
-        query_id_column: query-id
-        doc_id_column: corpus-id
-        score_column: score
+    ar:
+      lang: ar
+      output_dir: ar/miracl_dev
+      queries:
+        <<: *miracl_queries_defaults
+        config: ar-queries
+      corpus:
+        <<: *miracl_corpus_defaults
+        config: ar-corpus
+      qrels:
+        <<: *miracl_qrels_defaults
+        config: ar-qrels
+    de:
+      lang: de
+      output_dir: de/miracl_dev
+      queries:
+        <<: *miracl_queries_defaults
+        config: de-queries
+      corpus:
+        <<: *miracl_corpus_defaults
+        config: de-corpus
+      qrels:
+        <<: *miracl_qrels_defaults
+        config: de-qrels
+    es:
+      lang: es
+      output_dir: es/miracl_dev
+      queries:
+        <<: *miracl_queries_defaults
+        config: es-queries
+      corpus:
+        <<: *miracl_corpus_defaults
+        config: es-corpus
+      qrels:
+        <<: *miracl_qrels_defaults
+        config: es-qrels
+    fr:
+      lang: fr
+      output_dir: fr/miracl_dev
+      queries:
+        <<: *miracl_queries_defaults
+        config: fr-queries
+      corpus:
+        <<: *miracl_corpus_defaults
+        config: fr-corpus
+      qrels:
+        <<: *miracl_qrels_defaults
+        config: fr-qrels
+    hi:
+      lang: hi
+      output_dir: hi/miracl_dev
+      queries:
+        <<: *miracl_queries_defaults
+        config: hi-queries
+      corpus:
+        <<: *miracl_corpus_defaults
+        config: hi-corpus
+      qrels:
+        <<: *miracl_qrels_defaults
+        config: hi-qrels
+    id:
+      lang: id
+      output_dir: id/miracl_dev
+      queries:
+        <<: *miracl_queries_defaults
+        config: id-queries
+      corpus:
+        <<: *miracl_corpus_defaults
+        config: id-corpus
+      qrels:
+        <<: *miracl_qrels_defaults
+        config: id-qrels
+    ja:
+      lang: ja
+      output_dir: ja/miracl_dev
+      queries:
+        <<: *miracl_queries_defaults
+        config: ja-queries
+      corpus:
+        <<: *miracl_corpus_defaults
+        config: ja-corpus
+      qrels:
+        <<: *miracl_qrels_defaults
+        config: ja-qrels
     ko:
       lang: ko
       output_dir: ko/miracl_dev
       queries:
+        <<: *miracl_queries_defaults
         config: ko-queries
-        split: dev
-        id_column: _id
-        text_column: text
       corpus:
+        <<: *miracl_corpus_defaults
         config: ko-corpus
-        split: dev
-        id_column: _id
-        text_column: text
-        title_column: title
       qrels:
+        <<: *miracl_qrels_defaults
         config: ko-qrels
-        split: dev
-        query_id_column: query-id
-        doc_id_column: corpus-id
-        score_column: score
+    ru:
+      lang: ru
+      output_dir: ru/miracl_dev
+      queries:
+        <<: *miracl_queries_defaults
+        config: ru-queries
+      corpus:
+        <<: *miracl_corpus_defaults
+        config: ru-corpus
+      qrels:
+        <<: *miracl_qrels_defaults
+        config: ru-qrels
+    th:
+      lang: th
+      output_dir: th/miracl_dev
+      queries:
+        <<: *miracl_queries_defaults
+        config: th-queries
+      corpus:
+        <<: *miracl_corpus_defaults
+        config: th-corpus
+      qrels:
+        <<: *miracl_qrels_defaults
+        config: th-qrels
+    zh:
+      lang: zh
+      output_dir: zh/miracl_dev
+      queries:
+        <<: *miracl_queries_defaults
+        config: zh-queries
+      corpus:
+        <<: *miracl_corpus_defaults
+        config: zh-corpus
+      qrels:
+        <<: *miracl_qrels_defaults
+        config: zh-qrels
+
+BEIR-PL:
+  task: BEIR-PL
+  lang: pl
+  split: test
+  output_dir: pl/beir_pl
+  hf_path: clarin-knext/beir-pl
+  queries:
+    config: default
+    split: test
+    id_column: _id
+    text_column: text
+  corpus:
+    config: default
+    split: corpus
+    id_column: _id
+    text_column: text
+    title_column: title
+  qrels:
+    config: default
+    split: test
+    query_id_column: query-id
+    doc_id_column: corpus-id
+    score_column: score

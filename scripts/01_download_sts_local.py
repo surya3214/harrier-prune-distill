@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Download EN/KO STS benchmarks locally for offline GPU evaluation."""
+"""Download STS benchmarks locally for offline GPU evaluation."""
 
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -14,7 +16,10 @@ from harrier_distill.config import (
     get_resolved_paths,
     load_distill_config,
     load_sts_datasets_config,
+    parse_lang_list,
     require_path,
+    should_skip_download,
+    write_download_manifest,
 )
 from harrier_distill.mteb_sts import mteb_eng_v2_sts_task_names
 from harrier_distill.sts import (
@@ -32,17 +37,28 @@ def parse_args() -> argparse.Namespace:
         "--sts-config",
         default=str(PROJECT_ROOT / "configs" / "sts_datasets.yaml"),
     )
-    parser.add_argument("--lang", choices=["en", "ko", "both"], default="both")
+    parser.add_argument(
+        "--lang",
+        default="all",
+        help="Language code, comma-separated list, or 'all'",
+    )
     parser.add_argument(
         "--tasks",
         nargs="+",
         default=None,
         help="Explicit MTEB task names to download (overrides --lang filter)",
     )
+    parser.add_argument(
+        "--skip-existing",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Skip sources whose parquet + manifest already exist (default: on)",
+    )
+    parser.add_argument("--force", action="store_true", help="Rebuild even when outputs exist")
     return parser.parse_args()
 
 
-def select_tasks(sts_cfg: dict, *, lang: str, tasks: list[str] | None) -> list[tuple[str, dict]]:
+def select_tasks(sts_cfg: dict, *, langs: set[str], tasks: list[str] | None) -> list[tuple[str, dict]]:
     if tasks:
         selected = []
         for task_name in tasks:
@@ -51,12 +67,13 @@ def select_tasks(sts_cfg: dict, *, lang: str, tasks: list[str] | None) -> list[t
             selected.append((task_name, sts_cfg[task_name]))
         return selected
 
-    langs = {"en", "ko"} if lang == "both" else {lang}
-    return [
-        (task_name, task_cfg)
-        for task_name, task_cfg in sts_cfg.items()
-        if task_cfg.get("lang") in langs
-    ]
+    selected: list[tuple[str, dict]] = []
+    for task_name, task_cfg in sts_cfg.items():
+        if not isinstance(task_cfg, dict) or "sources" not in task_cfg:
+            continue
+        if task_cfg.get("lang") in langs:
+            selected.append((task_name, task_cfg))
+    return selected
 
 
 def main() -> None:
@@ -66,19 +83,39 @@ def main() -> None:
     paths = get_resolved_paths(distill_cfg)
     local_root = require_path(paths, "local_data_root")
 
+    if args.tasks:
+        langs = set()
+    else:
+        langs = set(parse_lang_list(args.lang))
+
     sts_root = local_root / "sts"
     manifest_entries: list[dict] = []
 
-    for task_name, task_cfg in select_tasks(sts_cfg, lang=args.lang, tasks=args.tasks):
-        lang = task_cfg["lang"]
-        out_dir = sts_root / lang
+    for task_name, task_cfg in select_tasks(sts_cfg, langs=langs, tasks=args.tasks):
+        default_lang = task_cfg.get("lang", "en")
+        out_dir = sts_root / default_lang
 
         for source in task_cfg.get("sources", []):
             name = source["name"]
+            lang = source.get("lang", default_lang)
+            out_dir = sts_root / lang
             hf_path = source["hf_path"]
             split = source["split"]
             hf_subset = source.get("hf_subset")
             output_path = out_dir / f"{name}.parquet"
+            manifest_path = out_dir / f"{name}.manifest.json"
+
+            if (
+                not args.force
+                and args.skip_existing
+                and output_path.exists()
+                and manifest_path.exists()
+            ):
+                manifest = json.load(open(manifest_path, encoding="utf-8"))
+                entry = dict(manifest)
+                manifest_entries.append(entry)
+                print(f"[skip] {task_name}/{name}: {entry.get('rows', 0):,} rows at {output_path}")
+                continue
 
             subset_label = f" subset={hf_subset}" if hf_subset else ""
             print(f"Downloading {task_name}/{name} from {hf_path} [{split}]{subset_label} ...")
@@ -100,8 +137,10 @@ def main() -> None:
                 "rows": count,
                 "path": str(output_path),
                 "sha1": parquet_sha1(output_path),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
             }
             manifest_entries.append(entry)
+            write_download_manifest(manifest_path, entry)
             print(f"  wrote {count:,} rows -> {output_path}")
 
     manifest_path = sts_root / "manifest.json"

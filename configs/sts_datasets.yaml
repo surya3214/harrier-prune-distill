@@ -1,7 +1,5 @@
 # STS benchmark definitions for scripts/01_download_sts_local.py
 # Run on local infra (internet). Outputs parquet under {local_data_root}/sts/
-#
-# Task keys are MTEB task names. Each task writes to {lang}/{source.name}.parquet.
 
 BIOSSES:
   lang: en
@@ -70,6 +68,76 @@ STS22.v2:
       hf_path: mteb/sts22-crosslingual-sts
       hf_subset: en
       split: test
+    - name: sts22_v2_ar_test
+      hf_path: mteb/sts22-crosslingual-sts
+      hf_subset: ar
+      split: test
+      lang: ar
+    - name: sts22_v2_de_test
+      hf_path: mteb/sts22-crosslingual-sts
+      hf_subset: de
+      split: test
+      lang: de
+    - name: sts22_v2_es_test
+      hf_path: mteb/sts22-crosslingual-sts
+      hf_subset: es
+      split: test
+      lang: es
+    - name: sts22_v2_fr_test
+      hf_path: mteb/sts22-crosslingual-sts
+      hf_subset: fr
+      split: test
+      lang: fr
+    - name: sts22_v2_hi_test
+      hf_path: mteb/sts22-crosslingual-sts
+      hf_subset: hi
+      split: test
+      lang: hi
+    - name: sts22_v2_id_test
+      hf_path: mteb/sts22-crosslingual-sts
+      hf_subset: id
+      split: test
+      lang: id
+    - name: sts22_v2_ja_test
+      hf_path: mteb/sts22-crosslingual-sts
+      hf_subset: ja
+      split: test
+      lang: ja
+    - name: sts22_v2_ko_test
+      hf_path: mteb/sts22-crosslingual-sts
+      hf_subset: ko
+      split: test
+      lang: ko
+    - name: sts22_v2_pl_test
+      hf_path: mteb/sts22-crosslingual-sts
+      hf_subset: pl
+      split: test
+      lang: pl
+    - name: sts22_v2_pt_test
+      hf_path: mteb/sts22-crosslingual-sts
+      hf_subset: pt
+      split: test
+      lang: pt
+    - name: sts22_v2_ru_test
+      hf_path: mteb/sts22-crosslingual-sts
+      hf_subset: ru
+      split: test
+      lang: ru
+    - name: sts22_v2_th_test
+      hf_path: mteb/sts22-crosslingual-sts
+      hf_subset: th
+      split: test
+      lang: th
+    - name: sts22_v2_vi_test
+      hf_path: mteb/sts22-crosslingual-sts
+      hf_subset: vi
+      split: test
+      lang: vi
+    - name: sts22_v2_zh_test
+      hf_path: mteb/sts22-crosslingual-sts
+      hf_subset: zh
+      split: test
+      lang: zh
 
 KorSTS:
   lang: ko
@@ -80,3 +148,41 @@ KorSTS:
     - name: korsts_valid
       hf_path: mteb/KorSTS
       split: valid
+
+JSICK:
+  lang: ja
+  sources:
+    - name: jsick_test
+      hf_path: mteb/JSICK
+      split: test
+
+ASSIN2:
+  lang: pt
+  sources:
+    - name: assin2_test
+      hf_path: mteb/ASSIN2
+      split: test
+
+SemRel24:
+  lang: en
+  sources:
+    - name: semrel24_ar_test
+      hf_path: mteb/SemRel24
+      hf_subset: ar
+      split: test
+      lang: ar
+    - name: semrel24_es_test
+      hf_path: mteb/SemRel24
+      hf_subset: es
+      split: test
+      lang: es
+    - name: semrel24_hi_test
+      hf_path: mteb/SemRel24
+      hf_subset: hi
+      split: test
+      lang: hi
+    - name: semrel24_id_test
+      hf_path: mteb/SemRel24
+      hf_subset: id
+      split: test
+      lang: id

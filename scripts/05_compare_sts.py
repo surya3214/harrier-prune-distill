@@ -12,7 +12,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from harrier_distill.config import get_resolved_paths, load_distill_config, require_path, resolve_sts_paths
-from harrier_distill.eval import compare_sts, print_compare_summary, save_eval_summary
+from harrier_distill.eval import STS_SUITES, compare_sts, print_compare_summary, save_eval_summary
 
 
 def parse_args() -> argparse.Namespace:
@@ -31,7 +31,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--suite",
-        choices=["en", "ko", "multilingual", "extended"],
+        choices=sorted(STS_SUITES.keys()),
         default="multilingual",
         help="STS task preset",
     )

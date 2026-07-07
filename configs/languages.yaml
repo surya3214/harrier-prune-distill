@@ -1,0 +1,232 @@
+# Central language registry for 16-lang Harrier distillation.
+# Training order: sequential checkpoint resume (each lang continues from previous).
+
+training_order:
+  - en
+  - ar
+  - de
+  - es
+  - fr
+  - hi
+  - id
+  - ja
+  - ko
+  - ru
+  - th
+  - zh
+  - it
+  - pt
+  - vi
+  - pl
+
+languages:
+  en:
+    name: English
+    c4_config: en
+    retrieval_backend: miracl
+    miracl_qrels_config: en
+    miracl_queries_config: queries-en
+    miracl_corpus_config: corpus-en
+    mteb_locale: eng-Latn
+    sts_eval_tasks: [STSBenchmark, STS22.v2]
+    retrieval_eval_tasks: [MSMARCO, MIRACLRetrieval]
+    num_epochs_sts: 1
+    num_epochs_retrieval: 1
+
+  ar:
+    name: Arabic
+    c4_config: ar
+    retrieval_backend: miracl
+    miracl_qrels_config: ar
+    miracl_queries_config: queries-ar
+    miracl_corpus_config: corpus-ar
+    mteb_locale: ara-Arab
+    sts_eval_tasks: [STS22.v2]
+    retrieval_eval_tasks: [MIRACLRetrieval]
+    num_epochs_sts: 1
+    num_epochs_retrieval: 1
+
+  de:
+    name: German
+    c4_config: de
+    retrieval_backend: miracl
+    miracl_qrels_config: de
+    miracl_queries_config: queries-de
+    miracl_corpus_config: corpus-de
+    mteb_locale: deu-Latn
+    sts_eval_tasks: [STS22.v2]
+    retrieval_eval_tasks: [MIRACLRetrieval]
+    num_epochs_sts: 1
+    num_epochs_retrieval: 1
+
+  es:
+    name: Spanish
+    c4_config: es
+    retrieval_backend: miracl
+    miracl_qrels_config: es
+    miracl_queries_config: queries-es
+    miracl_corpus_config: corpus-es
+    mteb_locale: spa-Latn
+    sts_eval_tasks: [STS22.v2]
+    retrieval_eval_tasks: [MIRACLRetrieval]
+    num_epochs_sts: 1
+    num_epochs_retrieval: 1
+
+  fr:
+    name: French
+    c4_config: fr
+    retrieval_backend: miracl
+    miracl_qrels_config: fr
+    miracl_queries_config: queries-fr
+    miracl_corpus_config: corpus-fr
+    mteb_locale: fra-Latn
+    sts_eval_tasks: [STS22.v2]
+    retrieval_eval_tasks: [MIRACLRetrieval]
+    num_epochs_sts: 1
+    num_epochs_retrieval: 1
+
+  hi:
+    name: Hindi
+    c4_config: hi
+    retrieval_backend: miracl
+    miracl_qrels_config: hi
+    miracl_queries_config: queries-hi
+    miracl_corpus_config: corpus-hi
+    mteb_locale: hin-Deva
+    sts_eval_tasks: [STS22.v2]
+    retrieval_eval_tasks: [MIRACLRetrieval]
+    num_epochs_sts: 1
+    num_epochs_retrieval: 1
+
+  id:
+    name: Indonesian
+    c4_config: id
+    retrieval_backend: miracl
+    miracl_qrels_config: id
+    miracl_queries_config: queries-id
+    miracl_corpus_config: corpus-id
+    mteb_locale: ind-Latn
+    sts_eval_tasks: [STS22.v2]
+    retrieval_eval_tasks: [MIRACLRetrieval]
+    num_epochs_sts: 1
+    num_epochs_retrieval: 1
+
+  ja:
+    name: Japanese
+    c4_config: ja
+    retrieval_backend: miracl
+    miracl_qrels_config: ja
+    miracl_queries_config: queries-ja
+    miracl_corpus_config: corpus-ja
+    mteb_locale: jpn-Jpan
+    sts_eval_tasks: [JSICK]
+    retrieval_eval_tasks: [MIRACLRetrieval]
+    num_epochs_sts: 1
+    num_epochs_retrieval: 1
+
+  ko:
+    name: Korean
+    c4_config: ko
+    fineweb2_subset: kor_Hang
+    retrieval_backend: miracl
+    miracl_qrels_config: ko
+    miracl_queries_config: queries-ko
+    miracl_corpus_config: corpus-ko
+    mteb_locale: kor-Kore
+    sts_eval_tasks: [KorSTS]
+    retrieval_eval_tasks: [MIRACLRetrieval]
+    num_epochs_sts: 1
+    num_epochs_retrieval: 1
+
+  ru:
+    name: Russian
+    c4_config: ru
+    retrieval_backend: miracl
+    miracl_qrels_config: ru
+    miracl_queries_config: queries-ru
+    miracl_corpus_config: corpus-ru
+    mteb_locale: rus-Cyrl
+    sts_eval_tasks: [STS22.v2]
+    retrieval_eval_tasks: [MIRACLRetrieval]
+    num_epochs_sts: 1
+    num_epochs_retrieval: 1
+
+  th:
+    name: Thai
+    c4_config: th
+    retrieval_backend: miracl
+    miracl_qrels_config: th
+    miracl_queries_config: queries-th
+    miracl_corpus_config: corpus-th
+    mteb_locale: tha-Thai
+    sts_eval_tasks: []
+    retrieval_eval_tasks: [MIRACLRetrieval]
+    num_epochs_sts: 1
+    num_epochs_retrieval: 1
+
+  zh:
+    name: Chinese
+    c4_config: zh
+    retrieval_backend: miracl
+    miracl_qrels_config: zh
+    miracl_queries_config: queries-zh
+    miracl_corpus_config: corpus-zh
+    mteb_locale: zho-Hans
+    sts_eval_tasks: [STS22.v2]
+    retrieval_eval_tasks: [MIRACLRetrieval]
+    num_epochs_sts: 1
+    num_epochs_retrieval: 1
+
+  it:
+    name: Italian
+    c4_config: it
+    retrieval_backend: mmarco
+    mmarco_config: italian
+    mteb_locale: ita-Latn
+    sts_eval_tasks: [STS22.v2]
+    retrieval_eval_tasks: []
+    num_epochs_sts: 1
+    num_epochs_retrieval: 1
+
+  pt:
+    name: Portuguese
+    c4_config: pt
+    retrieval_backend: mmarco
+    mmarco_config: portuguese
+    mteb_locale: por-Latn
+    sts_eval_tasks: [ASSIN2, STS22.v2]
+    retrieval_eval_tasks: []
+    num_epochs_sts: 1
+    num_epochs_retrieval: 1
+
+  vi:
+    name: Vietnamese
+    c4_config: vi
+    retrieval_backend: mmarco
+    mmarco_config: vietnamese
+    mteb_locale: vie-Latn
+    sts_eval_tasks: [STS22.v2]
+    retrieval_eval_tasks: []
+    num_epochs_sts: 1
+    num_epochs_retrieval: 1
+
+  pl:
+    name: Polish
+    c4_config: pl
+    retrieval_backend: maupqa
+    mteb_locale: pol-Latn
+    sts_eval_tasks: [STS22.v2]
+    retrieval_eval_tasks: [BEIR-PL]
+    num_epochs_sts: 1
+    num_epochs_retrieval: 1
+
+waves:
+  wave1:
+    name: MIRACL_12
+    languages: [en, ar, de, es, fr, hi, id, ja, ko, ru, th, zh]
+  wave2:
+    name: mMARCO
+    languages: [it, pt, vi]
+  wave3:
+    name: PL
+    languages: [pl]

@@ -21,9 +21,10 @@ from harrier_distill.config import (
     get_phase_config,
     get_resolved_paths,
     load_distill_config,
+    parse_lang_list,
     require_path,
-    resolve_retrieval_corpus_paths,
-    resolve_retrieval_embedding_paths,
+    resolve_corpus_path,
+    resolve_embedding_path,
 )
 from harrier_distill.data import (
     append_corpus_shard,
@@ -40,7 +41,7 @@ from harrier_distill.model import encode_batch_by_role, get_model_dtype_kwargs
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default=str(PROJECT_ROOT / "configs" / "distill.yaml"))
-    parser.add_argument("--lang", choices=["en", "ko"], required=True)
+    parser.add_argument("--lang", required=True, help="Language code (one per torchrun invocation)")
     parser.add_argument("--phase", choices=["sts", "retrieval"], default="sts")
     parser.add_argument("--corpus", default=None, help="Override corpus parquet path")
     parser.add_argument("--output", default=None, help="Override output parquet path")
@@ -98,7 +99,6 @@ def finalize_shards(
     shard_dir: Path,
     output_path: Path,
 ) -> None:
-    """CPU-only merge on rank 0; avoid NCCL barriers after GPU work."""
     write_rank_done_marker(shard_dir, rank)
     release_gpu_resources()
 
@@ -117,31 +117,22 @@ def finalize_shards(
     cleanup_distributed()
 
 
-def resolve_paths_for_phase(args: argparse.Namespace, cfg: dict, paths: dict) -> tuple[Path, Path]:
-    if args.phase == "retrieval":
-        corpus_paths = resolve_retrieval_corpus_paths(cfg)
-        embedding_paths = resolve_retrieval_embedding_paths(cfg)
-        corpus_path = Path(args.corpus) if args.corpus else corpus_paths[args.lang]
-        output_path = Path(args.output) if args.output else embedding_paths[args.lang]
-        return corpus_path, output_path
-
-    corpus_key = f"{args.lang}_corpus"
-    embeddings_key = f"{args.lang}_embeddings"
-    corpus_path = Path(args.corpus) if args.corpus else require_path(paths, corpus_key)
-    output_path = Path(args.output) if args.output else require_path(paths, embeddings_key)
-    return corpus_path, output_path
-
-
 def main() -> None:
     args = parse_args()
     rank, _local_rank, world_size, device = init_distributed()
+
+    langs = parse_lang_list(args.lang)
+    if len(langs) != 1:
+        raise ValueError("Specify exactly one --lang per torchrun invocation")
+    lang = langs[0]
 
     cfg = load_distill_config(args.config)
     paths = get_resolved_paths(cfg)
     data_cfg = cfg.get("data", {})
     train_cfg = cfg.get("training", {})
 
-    corpus_path, output_path = resolve_paths_for_phase(args, cfg, paths)
+    corpus_path = Path(args.corpus) if args.corpus else resolve_corpus_path(cfg, lang, phase=args.phase)
+    output_path = Path(args.output) if args.output else resolve_embedding_path(cfg, lang, phase=args.phase)
     teacher_path = require_path(paths, "teacher_model")
 
     if args.phase == "retrieval":
@@ -171,11 +162,11 @@ def main() -> None:
     table = pq.read_table(corpus_path, columns=columns)
     texts = table.column("text").to_pylist()
     ids = table.column("id").to_pylist()
-    langs = table.column("lang").to_pylist()
+    langs_col = table.column("lang").to_pylist()
     roles = table.column("role").to_pylist() if "role" in columns else None
     triplet_ids = table.column("triplet_id").to_pylist() if "triplet_id" in columns else None
 
-    dataset = CorpusDataset(texts, ids, langs, roles, triplet_ids)
+    dataset = CorpusDataset(texts, ids, langs_col, roles, triplet_ids)
     sampler = DistributedSampler(dataset, shuffle=False) if world_size > 1 else None
     loader = DataLoader(
         dataset,
@@ -204,7 +195,7 @@ def main() -> None:
     if hasattr(model, "max_seq_length"):
         model.max_seq_length = max_length
 
-    shard_dir = output_path.parent / f".{args.lang}_{args.phase}_embedding_shards"
+    shard_dir = output_path.parent / f".{lang}_{args.phase}_embedding_shards"
     ensure_dir(shard_dir)
     clear_rank_done_markers(shard_dir)
     for old in shard_dir.glob(f"rank{rank}_part_*.parquet"):
@@ -214,7 +205,7 @@ def main() -> None:
     shard_idx = 0
     iterator = tqdm(
         loader,
-        desc=f"embed-{args.phase}-{args.lang}-rank{rank}",
+        desc=f"embed-{args.phase}-{lang}-rank{rank}",
         disable=not is_main_process(rank),
     )
 
@@ -240,13 +231,13 @@ def main() -> None:
                 show_progress_bar=False,
             )
 
-        for idx, (row_id, text, lang, emb) in enumerate(
+        for idx, (row_id, text, lang_val, emb) in enumerate(
             zip(batch["id"], batch["text"], batch["lang"], embeddings)
         ):
             row = {
                 "id": row_id,
                 "text": text,
-                "lang": lang,
+                "lang": lang_val,
                 "embedding": emb.tolist(),
             }
             if batch.get("role"):
@@ -265,7 +256,7 @@ def main() -> None:
         shard_path = shard_dir / f"rank{rank}_part_{shard_idx:05d}.parquet"
         write_shard(rows, shard_path)
 
-    del loader, dataset, table, texts, ids, langs, model
+    del loader, dataset, table, texts, ids, langs_col, model
     release_gpu_resources()
     finalize_shards(
         rank=rank,

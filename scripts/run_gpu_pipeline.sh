@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
-# Run full GPU distillation pipeline (4x H100 via torchrun).
+# Run full GPU distillation pipeline (4x H100 via torchrun) for all 16 languages.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG="${CONFIG:-$ROOT/configs/distill.yaml}"
 NPROC="${NPROC:-4}"
+
+read_training_order() {
+  PYTHONPATH="$ROOT/src" python3 -c "from harrier_distill.config import get_training_order; print(' '.join(get_training_order()))"
+}
 
 run_embed() {
   local lang="$1"
@@ -22,21 +26,16 @@ run_train() {
     --lang "$lang"
 }
 
+LANGS=($(read_training_order))
+
 echo "=== Baseline eval (populate paths in distill.yaml first) ==="
 echo "python $ROOT/scripts/04_eval_sts.py --config $CONFIG --model <student_model> --label pruned_baseline --local-sts"
-echo "python $ROOT/scripts/04_eval_sts.py --config $CONFIG --model <teacher_model> --label teacher --local-sts"
 
-echo "=== EN: embed + train ==="
-run_embed en
-run_train en
-
-echo "=== KO: embed + train ==="
-run_embed ko
-# KO step auto-resumes checkpoint_en when present
-torchrun --standalone --nproc_per_node="$NPROC" \
-  "$ROOT/scripts/03_train_distill_mse.py" \
-  --config "$CONFIG" \
-  --lang ko
+for lang in "${LANGS[@]}"; do
+  echo "=== STS ${lang}: embed + train (sequential resume) ==="
+  run_embed "$lang"
+  run_train "$lang"
+done
 
 echo "=== Final eval ==="
-echo "python $ROOT/scripts/04_eval_sts.py --config $CONFIG --model <output_dir>/checkpoint_final --label distilled_final --local-sts"
+echo "python $ROOT/scripts/04_eval_sts.py --config $CONFIG --model <output_dir>/checkpoint_final --label distilled_final --local-sts --suite all16"

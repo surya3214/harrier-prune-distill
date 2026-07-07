@@ -88,51 +88,21 @@ STS22.v2:
       hf_subset: fr
       split: test
       lang: fr
-    - name: sts22_v2_hi_test
+    - name: sts22_v2_it_test
       hf_path: mteb/sts22-crosslingual-sts
-      hf_subset: hi
+      hf_subset: it
       split: test
-      lang: hi
-    - name: sts22_v2_id_test
-      hf_path: mteb/sts22-crosslingual-sts
-      hf_subset: id
-      split: test
-      lang: id
-    - name: sts22_v2_ja_test
-      hf_path: mteb/sts22-crosslingual-sts
-      hf_subset: ja
-      split: test
-      lang: ja
-    - name: sts22_v2_ko_test
-      hf_path: mteb/sts22-crosslingual-sts
-      hf_subset: ko
-      split: test
-      lang: ko
+      lang: it
     - name: sts22_v2_pl_test
       hf_path: mteb/sts22-crosslingual-sts
       hf_subset: pl
       split: test
       lang: pl
-    - name: sts22_v2_pt_test
-      hf_path: mteb/sts22-crosslingual-sts
-      hf_subset: pt
-      split: test
-      lang: pt
     - name: sts22_v2_ru_test
       hf_path: mteb/sts22-crosslingual-sts
       hf_subset: ru
       split: test
       lang: ru
-    - name: sts22_v2_th_test
-      hf_path: mteb/sts22-crosslingual-sts
-      hf_subset: th
-      split: test
-      lang: th
-    - name: sts22_v2_vi_test
-      hf_path: mteb/sts22-crosslingual-sts
-      hf_subset: vi
-      split: test
-      lang: vi
     - name: sts22_v2_zh_test
       hf_path: mteb/sts22-crosslingual-sts
       hf_subset: zh
@@ -160,29 +130,24 @@ ASSIN2:
   lang: pt
   sources:
     - name: assin2_test
-      hf_path: mteb/ASSIN2
+      hf_path: mteb/Assin2STS
       split: test
 
 SemRel24:
   lang: en
   sources:
     - name: semrel24_ar_test
-      hf_path: mteb/SemRel24
-      hf_subset: ar
+      hf_path: mteb/SemRel24STS
+      hf_subset: arb
       split: test
       lang: ar
-    - name: semrel24_es_test
-      hf_path: mteb/SemRel24
-      hf_subset: es
-      split: test
-      lang: es
     - name: semrel24_hi_test
-      hf_path: mteb/SemRel24
-      hf_subset: hi
+      hf_path: mteb/SemRel24STS
+      hf_subset: hin
       split: test
       lang: hi
     - name: semrel24_id_test
-      hf_path: mteb/SemRel24
-      hf_subset: id
+      hf_path: mteb/SemRel24STS
+      hf_subset: ind
       split: test
       lang: id

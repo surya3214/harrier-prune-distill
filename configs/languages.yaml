@@ -93,7 +93,7 @@ languages:
     miracl_queries_config: queries-hi
     miracl_corpus_config: corpus-hi
     mteb_locale: hin-Deva
-    sts_eval_tasks: [STS22.v2]
+    sts_eval_tasks: []
     retrieval_eval_tasks: [MIRACLRetrieval]
     num_epochs_sts: 1
     num_epochs_retrieval: 1
@@ -106,7 +106,7 @@ languages:
     miracl_queries_config: queries-id
     miracl_corpus_config: corpus-id
     mteb_locale: ind-Latn
-    sts_eval_tasks: [STS22.v2]
+    sts_eval_tasks: []
     retrieval_eval_tasks: [MIRACLRetrieval]
     num_epochs_sts: 1
     num_epochs_retrieval: 1
@@ -194,7 +194,7 @@ languages:
     retrieval_backend: mmarco
     mmarco_config: portuguese
     mteb_locale: por-Latn
-    sts_eval_tasks: [ASSIN2, STS22.v2]
+    sts_eval_tasks: [ASSIN2]
     retrieval_eval_tasks: []
     num_epochs_sts: 1
     num_epochs_retrieval: 1
@@ -205,7 +205,7 @@ languages:
     retrieval_backend: mmarco
     mmarco_config: vietnamese
     mteb_locale: vie-Latn
-    sts_eval_tasks: [STS22.v2]
+    sts_eval_tasks: []
     retrieval_eval_tasks: []
     num_epochs_sts: 1
     num_epochs_retrieval: 1

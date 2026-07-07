@@ -117,7 +117,7 @@ Also writes `manifest.json`.
 
 Download EN only: `--lang en`. All langs: `--lang all`. Specific tasks: `--tasks STSBenchmark JSICK`.
 
-STS22 subsets for all 16 langs, plus JSICK (ja), ASSIN2 (pt), SemRel24 (ar/es/hi/id) are in [`configs/sts_datasets.yaml`](configs/sts_datasets.yaml).
+STS22 subsets for ar/de/en/es/fr/it/pl/ru/zh, plus JSICK (ja), ASSIN2 (pt), SemRel24 (ar/hi/id) are in [`configs/sts_datasets.yaml`](configs/sts_datasets.yaml). Run `python scripts/validate_dataset_splits.py` to verify Hub paths before downloading.
 
 ## Step 2 — Migrate to GPU
 
@@ -259,8 +259,10 @@ Local (internet)                         GPU (offline)
 | Group | Langs | Retrieval train source |
 |-------|-------|------------------------|
 | MIRACL | ar, de, en, es, fr, hi, id, ja, ko, ru, th, zh | `datalama/miracl-hard-negatives` (150k triplets/lang) |
-| mMARCO | it, pt, vi | `unicamp-dl/mmarco` (300k triplets/lang) |
-| MAUPQA | pl | `ipipan/maupqa` (200k triplets) |
+| mMARCO | it | `hotchpotch/mmarco-hard-negatives-reranker-filtered` (italian-triplet) |
+| mMARCO | pt | `unicamp-dl/mmarco` TSV + BM25 runs (google translation) |
+| mMARCO | vi | `chieunq/mMARCO_vietnamese` |
+| MAUPQA | pl | `ipipan/maupqa` CSV subsets (legacy script bypass) |
 | EN bulk | en | MS MARCO triplets + MIRACL supplement |
 
 Config: [`configs/retrieval_datasets.yaml`](configs/retrieval_datasets.yaml).

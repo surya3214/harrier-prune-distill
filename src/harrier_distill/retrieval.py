@@ -130,6 +130,99 @@ def _corpus_text(row: dict[str, Any]) -> str:
     return str(body)
 
 
+def _load_hf_csv_stream(
+    *,
+    data_files: str | list[str],
+    split: str = "train",
+    sep: str = ",",
+    column_names: list[str] | None = None,
+):
+    from datasets import load_dataset
+
+    kwargs: dict[str, Any] = {
+        "data_files": data_files,
+        "split": split,
+        "streaming": True,
+    }
+    if sep != ",":
+        kwargs["sep"] = sep
+    if column_names:
+        kwargs["column_names"] = column_names
+    return load_dataset("csv", **kwargs)
+
+
+def iter_unicamp_mmarco_triplets(source_cfg: dict[str, Any]) -> Iterator[tuple[str, str, list[str]]]:
+    """Yield triplets from unicamp-dl/mmarco TSV + BM25 run files (Parquet-free)."""
+    from collections import defaultdict
+
+    from huggingface_hub import hf_hub_download
+
+    lang = source_cfg["config"]
+    translation = source_cfg.get("translation", "google")
+    repo = source_cfg.get("hf_path", "unicamp-dl/mmarco")
+    run_suffix = source_cfg.get("run_suffix", f"{lang}-msmarco")
+    negatives_per = int(source_cfg.get("negatives_per_triplet", 1))
+    base = f"hf://datasets/{repo}/data/{translation}"
+    tsv_kwargs = {"sep": "\t", "column_names": ["id", "text"]}
+    queries_relpath = source_cfg.get(
+        "queries_relpath",
+        f"queries/dev/{lang}_queries.dev.small.tsv",
+    )
+
+    queries_ds = _load_hf_csv_stream(
+        data_files=f"{base}/{queries_relpath}",
+        **tsv_kwargs,
+    )
+
+    query_by_id: dict[str, str] = {}
+    for row in queries_ds:
+        query_by_id[str(row["id"])] = str(row["text"])
+
+    run_path = hf_hub_download(
+        repo,
+        f"data/{translation}/runs/run.bm25_{run_suffix}.txt",
+        repo_type="dataset",
+    )
+    ranked: dict[str, list[tuple[int, str]]] = defaultdict(list)
+    needed_doc_ids: set[str] = set()
+    with open(run_path, encoding="utf-8") as handle:
+        for line in handle:
+            parts = line.strip().split("\t")
+            if len(parts) != 3:
+                continue
+            qid, doc_id, rank = parts
+            ranked[qid].append((int(rank), doc_id))
+            needed_doc_ids.add(doc_id)
+
+    corpus_ds = _load_hf_csv_stream(
+        data_files=f"{base}/collections/{lang}_collection.tsv",
+        **tsv_kwargs,
+    )
+    corpus_by_id: dict[str, str] = {}
+    for row in corpus_ds:
+        doc_id = str(row["id"])
+        if doc_id not in needed_doc_ids:
+            continue
+        corpus_by_id[doc_id] = str(row["text"])
+        if len(corpus_by_id) >= len(needed_doc_ids):
+            break
+
+    for qid, doc_ranks in ranked.items():
+        query = query_by_id.get(qid)
+        if not query:
+            continue
+        doc_ids = [doc_id for _, doc_id in sorted(doc_ranks, key=lambda item: item[0])]
+        if len(doc_ids) < 2:
+            continue
+        positive = corpus_by_id.get(doc_ids[0])
+        if not positive:
+            continue
+        negatives = [corpus_by_id[doc_id] for doc_id in doc_ids[1:] if doc_id in corpus_by_id]
+        if not negatives:
+            continue
+        yield query, positive, negatives[:negatives_per]
+
+
 def iter_msmarco_triplets(source_cfg: dict[str, Any]) -> Iterator[tuple[str, str, list[str]]]:
     dataset = _load_hf_dataset(source_cfg)
     query_col = source_cfg.get("query_column", "query")
@@ -156,7 +249,17 @@ def iter_maupqa_triplets(source_cfg: dict[str, Any]) -> Iterator[tuple[str, str,
     """Yield (query, positive, negatives) from ipipan/maupqa question-passage pairs."""
     from collections import defaultdict
 
-    dataset = _load_hf_dataset(source_cfg)
+    loader = source_cfg.get("loader")
+    if loader == "maupqa_csv" or source_cfg.get("hf_path") == "ipipan/maupqa":
+        subsets = source_cfg.get(
+            "csv_subsets",
+            ["msmarco", "nq", "poquad", "mqa", "mkqa"],
+        )
+        repo = source_cfg.get("hf_path", "ipipan/maupqa")
+        data_files = [f"hf://datasets/{repo}/data/{subset}/train-v2.0.0.csv" for subset in subsets]
+        dataset = _load_hf_csv_stream(data_files=data_files)
+    else:
+        dataset = _load_hf_dataset(source_cfg)
     query_col = source_cfg.get("query_column", "question")
     negatives_per = int(source_cfg.get("negatives_per_triplet", 3))
     title_col = source_cfg.get("title_column", "passage_title")
@@ -254,12 +357,15 @@ def collect_retrieval_rows(
 
     for source_cfg in lang_cfg.get("sources", []):
         name = source_cfg["name"]
+        loader = source_cfg.get("loader")
         if name.startswith("miracl"):
             triplet_iter = iter_miracl_triplets(source_cfg)
+        elif loader == "unicamp_mmarco":
+            triplet_iter = iter_unicamp_mmarco_triplets(source_cfg)
+        elif loader == "maupqa_csv" or name == "maupqa":
+            triplet_iter = iter_maupqa_triplets(source_cfg)
         elif "msmarco" in name or "mmarco" in name:
             triplet_iter = iter_msmarco_triplets(source_cfg)
-        elif name == "maupqa" or "maupqa" in name:
-            triplet_iter = iter_maupqa_triplets(source_cfg)
         else:
             raise ValueError(f"Unknown retrieval source '{name}' for language '{lang}'")
 

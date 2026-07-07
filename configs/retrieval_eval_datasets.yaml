@@ -197,15 +197,15 @@ BEIR-PL:
   lang: pl
   split: test
   output_dir: pl/beir_pl
-  hf_path: clarin-knext/beir-pl
+  hf_path: mteb/ArguAna-PL
   queries:
-    config: default
+    config: queries
     split: test
     id_column: _id
     text_column: text
   corpus:
-    config: default
-    split: corpus
+    config: corpus
+    split: test
     id_column: _id
     text_column: text
     title_column: title

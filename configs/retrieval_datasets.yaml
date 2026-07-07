@@ -156,7 +156,7 @@ zh:
       corpus_config: corpus-zh
 
 mmarco_defaults: &mmarco_defaults
-  hf_path: unicamp-dl/mmarco
+  hf_path: hotchpotch/mmarco-hard-negatives-reranker-filtered
   split: train
   streaming: true
   query_column: query
@@ -164,32 +164,50 @@ mmarco_defaults: &mmarco_defaults
   negative_column: negative
   negatives_per_triplet: 1
 
+mmarco_vi_defaults: &mmarco_vi_defaults
+  hf_path: chieunq/mMARCO_vietnamese
+  split: train
+  streaming: true
+  query_column: query
+  positive_column: positive
+  negative_column: negative
+  negatives_per_triplet: 1
+
+mmarco_pt_defaults: &mmarco_pt_defaults
+  loader: unicamp_mmarco
+  hf_path: unicamp-dl/mmarco
+  translation: google
+  split: train
+  streaming: false
+  negatives_per_triplet: 1
+
 it:
   target_triplets: 300000
   sources:
     - name: mmarco_triplets
       <<: *mmarco_defaults
-      config: italian
+      config: italian-triplet
 
 pt:
   target_triplets: 300000
   sources:
     - name: mmarco_triplets
-      <<: *mmarco_defaults
+      <<: *mmarco_pt_defaults
       config: portuguese
 
 vi:
   target_triplets: 300000
   sources:
     - name: mmarco_triplets
-      <<: *mmarco_defaults
-      config: vietnamese
+      <<: *mmarco_vi_defaults
 
 pl:
   target_triplets: 200000
   sources:
     - name: maupqa
+      loader: maupqa_csv
       hf_path: ipipan/maupqa
+      csv_subsets: [msmarco, nq, poquad, mqa, mkqa]
       split: train
       streaming: true
       query_column: question

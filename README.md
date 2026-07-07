@@ -1,6 +1,6 @@
 # Harrier 12-Layer MSE Distillation
 
-Distill a **12-layer pruned** Harrier student from the full **18-layer `microsoft/harrier-oss-v1-270m` teacher** using cached teacher embeddings and MSE loss. Training is split into two steps: **EN → KO**.
+Distill a **12-layer pruned** Harrier student from the full **18-layer `microsoft/harrier-oss-v1-270m` teacher** using cached teacher embeddings. Supports **16 languages** with sequential checkpoint resume (see [`configs/languages.yaml`](configs/languages.yaml)).
 
 ## Overview
 
@@ -9,15 +9,15 @@ Local (internet)                GPU (offline, 4x H100)
 ─────────────────               ───────────────────────
 01_download_local.py    →       rsync corpora
 01_download_sts_local.py →      rsync STS parquet
-                                02_generate_teacher_embeddings.py (EN, KO)
-                                03_train_distill_mse.py (EN → checkpoint_en)
-                                03_train_distill_mse.py (KO → checkpoint_final)
-                                04_eval_sts.py (MTEB eng v2 STS + KorSTS, --local-sts offline)
+                                02_generate_teacher_embeddings.py (per lang)
+                                03_train_distill_mse.py (sequential 16-lang chain)
+                                04_eval_sts.py (--suite all16, --local-sts offline)
 ```
 
-- **Prompt:** `sts_query` on all distillation and eval text
-- **Loss:** Configurable weighted mix of pointwise MSE, cosine embedding loss, and pairwise MSE (all on L2-normalized 640-dim embeddings)
-- **Data:** ~4.5M total (~2.3M EN + ~2.3M KO), no pilot phase
+- **Languages:** `en`, `ko`, `ar`, `zh`, `fr`, `de`, `hi`, `id`, `it`, `ja`, `pt`, `ru`, `es`, `vi`, `th`, `pl` (training order in `languages.yaml`)
+- **Prompt:** `sts_query` (STS) / `web_search_query` (retrieval queries)
+- **Loss:** MSE + cosine (STS); MSE + cosine + pairwise_mse (retrieval)
+- **Production data:** 1M texts/lang × 16 ≈ 16M STS rows; ~2.9M retrieval triplets
 - **Seq length:** 512 tokens
 
 ## Training losses
@@ -27,28 +27,27 @@ Configure weights in [`configs/distill.yaml`](configs/distill.yaml):
 ```yaml
 training:
   losses:
-    mse: 1.0
-    cosine: 0.0
+    mse: 0.8
+    cosine: 0.2
     pairwise_mse: 0.0
-  pairwise_triplets_per_batch: 64
 
 phases:
   retrieval:
     losses:
-      mse: 1.0
-      cosine: 0.0
-      pairwise_mse: 0.0   # increase after re-embedding with triplet_id
+      mse: 0.4
+      cosine: 0.2
+      pairwise_mse: 0.4
 ```
 
 | Loss | Description | STS phase | Retrieval phase |
 |------|-------------|-----------|-----------------|
 | `mse` | Pointwise MSE vs cached teacher embeddings | Yes | Yes |
 | `cosine` | `1 - cosine_similarity(student, teacher)` on normalized vectors | Yes | Yes |
-| `pairwise_mse` | MSE on query↔doc dot products per triplet vs teacher | No (weight 0) | Yes, after re-embed |
+| `pairwise_mse` | MSE on query↔doc dot products per triplet vs teacher | No (weight 0) | Yes |
 
-**Defaults** preserve prior behavior: `mse: 1.0`, others `0.0`.
+**Contrastive loss is not implemented** — optional Phase-4 fallback only (see Fallback ladder).
 
-**Pairwise MSE requirement:** Retrieval embedding parquet must include `triplet_id` (written by `02_generate_teacher_embeddings.py --phase retrieval`). If you generated retrieval embeddings before this column existed, re-run teacher embedding generation before enabling `pairwise_mse > 0`.
+**Pairwise MSE requirement:** Retrieval embedding parquet must include `triplet_id` (from `02_generate_teacher_embeddings.py --phase retrieval`).
 
 ## Setup
 
@@ -57,53 +56,34 @@ pip install -r requirements.txt
 export PYTHONPATH=src
 ```
 
-Edit [`configs/distill.yaml`](configs/distill.yaml) and populate all `paths.*` fields:
+Edit [`configs/distill.yaml`](configs/distill.yaml) and populate `paths.*` (per-language paths resolve automatically):
 
 ```yaml
 paths:
-  local_data_root: "/data/harrier-distill"          # local download
-  gpu_data_root: "/mnt/data/harrier-distill"        # after rsync
+  local_data_root: "/data/harrier-distill"
+  gpu_data_root: "/mnt/data/harrier-distill"
   teacher_model: "/models/harrier-oss-v1-270m"
   student_model: "/models/harrier-12l-pruned"
   output_dir: "/mnt/data/harrier-distill/output"
-  en_corpus: "/mnt/data/harrier-distill/en/corpus.parquet"
-  ko_corpus: "/mnt/data/harrier-distill/ko/corpus.parquet"
-  en_embeddings: "/mnt/data/harrier-distill/output/embeddings/en_embeddings.parquet"
-  ko_embeddings: "/mnt/data/harrier-distill/output/embeddings/ko_embeddings.parquet"
   sts_data_root: "/mnt/data/harrier-distill/sts"
-  en_sts_test: "/mnt/data/harrier-distill/sts/en/stsbenchmark_test.parquet"
-  ko_sts_test: "/mnt/data/harrier-distill/sts/ko/korsts_test.parquet"
-  en_retrieval_corpus: "/mnt/data/harrier-distill/retrieval/en/corpus.parquet"
-  ko_retrieval_corpus: "/mnt/data/harrier-distill/retrieval/ko/corpus.parquet"
-  en_retrieval_embeddings: "/mnt/data/harrier-distill/output/retrieval/embeddings/en_embeddings.parquet"
-  ko_retrieval_embeddings: "/mnt/data/harrier-distill/output/retrieval/embeddings/ko_embeddings.parquet"
   retrieval_eval_data_root: "/mnt/data/harrier-distill/retrieval_eval"
-  retrieval_checkpoint_en: "/mnt/data/harrier-distill/output/retrieval/checkpoint_en"
-  retrieval_checkpoint_final: "/mnt/data/harrier-distill/output/retrieval/checkpoint_final"
+
+data:
+  full_samples_per_lang: 1000000
+  pilot_samples_per_lang: 0
 ```
 
-Dataset sources: [`configs/datasets.yaml`](configs/datasets.yaml) (STS), [`configs/sts_datasets.yaml`](configs/sts_datasets.yaml) (STS eval), [`configs/retrieval_datasets.yaml`](configs/retrieval_datasets.yaml) (retrieval).
+Configs: [`languages.yaml`](configs/languages.yaml), [`datasets.yaml`](configs/datasets.yaml), [`sts_datasets.yaml`](configs/sts_datasets.yaml), [`retrieval_datasets.yaml`](configs/retrieval_datasets.yaml).
 
 ## Step 1 — Download on local (internet)
 
 ```bash
-python scripts/01_download_local.py --config configs/distill.yaml
+python scripts/01_download_local.py --config configs/distill.yaml --lang all
+python scripts/01_download_local.py --lang ar,de --skip-existing   # incremental
+python scripts/01_download_local.py --lang en --force            # rebuild
 ```
 
-Outputs:
-
-- `{local_data_root}/en/corpus.parquet` (~2.3M rows)
-- `{local_data_root}/ko/corpus.parquet` (~2.3M rows)
-
-Sources:
-
-| Lang | Dataset | Target |
-|------|---------|--------|
-| EN | `allenai/c4` (en) | 2.0M |
-| EN | `sentence-transformers/all-nli` (`pair`) | 300k unique |
-| KO | `allenai/c4` (ko) | 2.0M |
-| KO | `klue/klue` (nli) | 50k unique |
-| KO | `HuggingFaceFW/fineweb-2` (`kor_Hang`, optional) | 200k |
+Outputs `{local_data_root}/{lang}/corpus.parquet` + `manifest.json`. Default **1M texts/lang** (85% C4 + 15% multilingual-NLI).
 
 ## Step 1b — Download STS benchmarks (local, internet)
 
@@ -135,7 +115,9 @@ Outputs under `{local_data_root}/sts/`:
 
 Also writes `manifest.json`.
 
-Download EN only: `--lang en`. Download specific tasks: `--tasks STSBenchmark BIOSSES`.
+Download EN only: `--lang en`. All langs: `--lang all`. Specific tasks: `--tasks STSBenchmark JSICK`.
+
+STS22 subsets for all 16 langs, plus JSICK (ja), ASSIN2 (pt), SemRel24 (ar/es/hi/id) are in [`configs/sts_datasets.yaml`](configs/sts_datasets.yaml).
 
 ## Step 2 — Migrate to GPU
 
@@ -164,38 +146,26 @@ python scripts/04_eval_sts.py --config configs/distill.yaml \
   --model /models/harrier-oss-v1-270m --label teacher --local-sts
 ```
 
-## Step 4 — EN distillation (embed + train)
+## Step 4–5 — GPU distillation (16 languages)
 
-```bash
-# Generate teacher embeddings (4 GPUs)
-torchrun --standalone --nproc_per_node=4 \
-  scripts/02_generate_teacher_embeddings.py --config configs/distill.yaml --lang en
-
-# Train student with MSE loss (4 GPUs)
-torchrun --standalone --nproc_per_node=4 \
-  scripts/03_train_distill_mse.py --config configs/distill.yaml --lang en
-```
-
-Checkpoint: `{output_dir}/checkpoint_en/`
-
-## Step 5 — KO distillation (embed + train)
-
-```bash
-torchrun --standalone --nproc_per_node=4 \
-  scripts/02_generate_teacher_embeddings.py --config configs/distill.yaml --lang ko
-
-# Auto-resumes checkpoint_en when present
-torchrun --standalone --nproc_per_node=4 \
-  scripts/03_train_distill_mse.py --config configs/distill.yaml --lang ko
-```
-
-Checkpoint: `{output_dir}/checkpoint_final/`
-
-Or run the full GPU sequence:
+Each language resumes the previous checkpoint (order in `languages.yaml`). Run the full chain:
 
 ```bash
 bash scripts/run_gpu_pipeline.sh
 ```
+
+Or one language:
+
+```bash
+torchrun --standalone --nproc_per_node=4 \
+  scripts/02_generate_teacher_embeddings.py --config configs/distill.yaml --lang ar
+torchrun --standalone --nproc_per_node=4 \
+  scripts/03_train_distill_mse.py --config configs/distill.yaml --lang ar
+```
+
+Checkpoints: `{output_dir}/checkpoints/sts/{lang}/` (legacy: `checkpoint_en`, `checkpoint_final` for en/pl).
+
+Epoch count: `default_num_epochs` in `distill.yaml`, per-lang overrides in `languages.yaml`, or legacy `num_epochs_en` keys.
 
 ## Step 6 — Final eval
 
@@ -226,7 +196,7 @@ python scripts/05_compare_sts.py --config configs/distill.yaml \
   --suite multilingual --local-sts
 ```
 
-Suites: `en` (all 9 MTEB(eng, v2) STS tasks), `ko` (KorSTS), `multilingual` (EN + KO), `extended` (same as multilingual).
+Suites: `en`, `ko`, `wave1`, `wave2`, `wave3`, `all16`, `multilingual`, `extended`.
 
 ## Step 8 — Debug MSE vs STS gap
 
@@ -258,14 +228,17 @@ Interpretation:
 | Poor STS vs pruned baseline | Distillation may not be helping; check init checkpoint |
 | Low dim_corr_min | Dimension collapse in student |
 
-## Time estimates (4x H100, ~4.5M)
+## Time estimates (4x H100, production 16-lang)
 
-| Stage | Wall clock |
-|-------|------------|
-| Local download | hours – 1 day |
-| Teacher embed EN + KO | ~2–5 h |
-| Train EN + KO (1 epoch each) | ~1–1.5 h |
-| Eval | ~15–30 min |
+| Stage | Rough scale |
+|-------|-------------|
+| Local download (16 langs) | hours – 1 day |
+| STS embed + train × 16 | ~17–35 GPU-hours |
+| Retrieval embed + train × 16 | ~15–30 GPU-hours |
+| Eval (STS22 + MIRACL subsets) | ~4–8 hours |
+| Embedding storage | ~90–100 GB total |
+
+**Pilot** (`pilot_samples_per_lang: 100000`, retrieval `--pilot`): ~1.6M texts, ~5 GB embeddings — recommended first validation.
 
 ## Retrieval distillation (phase 2)
 
@@ -281,28 +254,30 @@ Local (internet)                         GPU (offline)
                                          04_eval_retrieval.py / 05_compare_retrieval.py
 ```
 
-### Datasets (EN + KO first)
+### Datasets (16 languages)
 
-| Lang | Source | HF dataset |
-|------|--------|------------|
-| EN | MIRACL EN hard negatives (supplement) + MS MARCO triplets (bulk) | `datalama/miracl-hard-negatives` (`en`) + `sentence-transformers/msmarco-co-condenser-margin-mse-sym-mnrl-mean-v1` |
-| KO | MIRACL hard negatives (`kor`) | `datalama/miracl-hard-negatives` |
+| Group | Langs | Retrieval train source |
+|-------|-------|------------------------|
+| MIRACL | ar, de, en, es, fr, hi, id, ja, ko, ru, th, zh | `datalama/miracl-hard-negatives` (150k triplets/lang) |
+| mMARCO | it, pt, vi | `unicamp-dl/mmarco` (300k triplets/lang) |
+| MAUPQA | pl | `ipipan/maupqa` (200k triplets) |
+| EN bulk | en | MS MARCO triplets + MIRACL supplement |
 
-Config: [`configs/retrieval_datasets.yaml`](configs/retrieval_datasets.yaml). Add languages by extending `languages:` and a new lang block (same MIRACL dataset, different `qrels_config`).
+Config: [`configs/retrieval_datasets.yaml`](configs/retrieval_datasets.yaml).
 
-**Pilot run** (mini MIRACL EN + mini MIRACL KO + 50k MS MARCO):
+**Pilot run:**
 
 ```bash
-python scripts/01_download_retrieval_local.py --config configs/distill.yaml --pilot
+python scripts/01_download_retrieval_local.py --config configs/distill.yaml --pilot --lang all
 ```
 
 **Full download:**
 
 ```bash
-python scripts/01_download_retrieval_local.py --config configs/distill.yaml
+python scripts/01_download_retrieval_local.py --config configs/distill.yaml --lang all
 ```
 
-Outputs `{local_data_root}/retrieval/{en,ko}/corpus.parquet` with `role` (`query` | `doc`) and `triplet_id` columns.
+Outputs `{local_data_root}/retrieval/{lang}/corpus.parquet` with `role` and `triplet_id` columns. `--skip-existing` / `--force` supported.
 
 ### Download retrieval eval benchmarks (local, internet)
 
@@ -314,10 +289,7 @@ python scripts/01_download_retrieval_eval_local.py --config configs/distill.yaml
 
 Outputs under `{local_data_root}/retrieval_eval/`:
 
-- `en/msmarco_dev/` — queries, corpus, qrels parquet (~3.5 GB; MSMARCO dev)
-- `en/miracl_dev/` — MIRACL EN dev
-- `ko/miracl_dev/` — MIRACL KO dev
-- `manifest.json`
+- MIRACL dev for 12 languages + MSMARCO (EN) + BEIR-PL (PL)
 
 Config: [`configs/retrieval_eval_datasets.yaml`](configs/retrieval_eval_datasets.yaml). Set `paths.retrieval_eval_data_root` in `distill.yaml` (or rely on `gpu_data_root`).
 
@@ -327,9 +299,8 @@ Config: [`configs/retrieval_eval_datasets.yaml`](configs/retrieval_eval_datasets
 bash scripts/run_gpu_retrieval_pipeline.sh
 ```
 
-- **Prompts:** `web_search_query` on queries, no prompt on documents
-- **Init:** EN pass resumes from STS `checkpoint_final`; KO pass resumes `retrieval/checkpoint_en`
-- **Checkpoints:** `{output_dir}/retrieval/checkpoint_en` → `checkpoint_final`
+- **Init:** sequential resume per `languages.yaml` order
+- **Checkpoints:** `{output_dir}/retrieval/checkpoints/{lang}/` (legacy `checkpoint_en` / `checkpoint_final`)
 
 ### Retrieval eval
 
@@ -353,7 +324,7 @@ python scripts/05_compare_retrieval.py --config configs/distill.yaml \
   --student /path/to/retrieval/checkpoint_final --suite en_ko --local-retrieval
 ```
 
-Tasks: MTEB `MSMARCO` (EN dev) + `MIRACLRetrieval` (`en`, `ko` dev subsets). Suites: `en`, `ko`, `en_ko`.
+Tasks: MSMARCO (EN), MIRACLRetrieval (12 langs), BEIR-PL (PL). Suites: `en`, `ko`, `en_ko`, `wave1`, `wave3`, `all16`, `miracl12`.
 
 ## Fallback ladder
 
@@ -369,10 +340,11 @@ Tasks: MTEB `MSMARCO` (EN dev) + `MIRACLRetrieval` (`en`, `ko` dev subsets). Sui
 
 ```text
 configs/
-  distill.yaml              # paths + training hyperparams (you populate)
-  datasets.yaml             # STS phase HF dataset definitions
-  retrieval_datasets.yaml   # retrieval phase HF dataset definitions (EN/KO)
-  retrieval_eval_datasets.yaml  # retrieval eval benchmark download (MSMARCO, MIRACL)
+  distill.yaml              # paths + training hyperparams
+  languages.yaml            # 16-lang registry, training order, eval mapping
+  datasets.yaml             # STS phase HF dataset definitions (16 langs)
+  retrieval_datasets.yaml   # retrieval phase (MIRACL, mMARCO, MAUPQA)
+  retrieval_eval_datasets.yaml  # MSMARCO, MIRACL×12, BEIR-PL
 scripts/
   01_download_local.py
   01_download_retrieval_local.py

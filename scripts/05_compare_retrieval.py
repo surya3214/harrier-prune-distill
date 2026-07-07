@@ -18,6 +18,7 @@ from harrier_distill.config import (
     resolve_retrieval_eval_paths,
 )
 from harrier_distill.eval import (
+    RETRIEVAL_SUITES,
     _miracl_eval_subsets,
     compare_retrieval,
     print_retrieval_compare_summary,
@@ -34,7 +35,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", default=None, help="Directory for comparison JSON")
     parser.add_argument(
         "--suite",
-        choices=["en", "ko", "en_ko"],
+        choices=sorted(RETRIEVAL_SUITES.keys()),
         default="en_ko",
         help="Retrieval task suite",
     )

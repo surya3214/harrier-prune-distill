@@ -132,9 +132,9 @@ def _corpus_text(row: dict[str, Any]) -> str:
 
 def iter_msmarco_triplets(source_cfg: dict[str, Any]) -> Iterator[tuple[str, str, list[str]]]:
     dataset = _load_hf_dataset(source_cfg)
-    query_col = source_cfg["query_column"]
-    positive_col = source_cfg["positive_column"]
-    negative_col = source_cfg["negative_column"]
+    query_col = source_cfg.get("query_column", "query")
+    positive_col = source_cfg.get("positive_column", "positive")
+    negative_col = source_cfg.get("negative_column", "negative")
     negatives_per = int(source_cfg.get("negatives_per_triplet", 1))
 
     for row in dataset:
@@ -150,6 +150,46 @@ def iter_msmarco_triplets(source_cfg: dict[str, Any]) -> Iterator[tuple[str, str
             yield str(query), str(positive), negatives[:negatives_per]
         elif negatives:
             yield str(query), str(positive), negatives
+
+
+def iter_maupqa_triplets(source_cfg: dict[str, Any]) -> Iterator[tuple[str, str, list[str]]]:
+    """Yield (query, positive, negatives) from ipipan/maupqa question-passage pairs."""
+    from collections import defaultdict
+
+    dataset = _load_hf_dataset(source_cfg)
+    query_col = source_cfg.get("query_column", "question")
+    negatives_per = int(source_cfg.get("negatives_per_triplet", 3))
+    title_col = source_cfg.get("title_column", "passage_title")
+    text_col = source_cfg.get("text_column", "passage_text")
+    relevant_col = source_cfg.get("relevant_column", "relevant")
+    group_col = source_cfg.get("group_column", "question_id")
+
+    grouped: dict[str, dict[str, Any]] = defaultdict(lambda: {"question": None, "positive": [], "negative": []})
+    for row in dataset:
+        qid = str(row[group_col])
+        question = row.get(query_col)
+        if not question:
+            continue
+        title = row.get(title_col) or ""
+        body = row.get(text_col) or ""
+        passage = f"{title}\n{body}".strip() if title else str(body)
+        if not passage:
+            continue
+        bucket = grouped[qid]
+        bucket["question"] = str(question)
+        if bool(row.get(relevant_col, False)):
+            bucket["positive"].append(passage)
+        else:
+            bucket["negative"].append(passage)
+
+    for bucket in grouped.values():
+        if not bucket["positive"] or not bucket["negative"]:
+            continue
+        yield (
+            bucket["question"],
+            bucket["positive"][0],
+            bucket["negative"][:negatives_per],
+        )
 
 
 def iter_miracl_triplets(source_cfg: dict[str, Any]) -> Iterator[tuple[str, str, list[str]]]:
@@ -216,8 +256,10 @@ def collect_retrieval_rows(
         name = source_cfg["name"]
         if name.startswith("miracl"):
             triplet_iter = iter_miracl_triplets(source_cfg)
-        elif "msmarco" in name:
+        elif "msmarco" in name or "mmarco" in name:
             triplet_iter = iter_msmarco_triplets(source_cfg)
+        elif name == "maupqa" or "maupqa" in name:
+            triplet_iter = iter_maupqa_triplets(source_cfg)
         else:
             raise ValueError(f"Unknown retrieval source '{name}' for language '{lang}'")
 
@@ -296,15 +338,19 @@ def build_retrieval_corpus(
 
 def get_retrieval_lang_configs(cfg: dict[str, Any]) -> tuple[list[str], dict[str, dict[str, Any]]]:
     pilot = cfg.get("pilot", {})
+    languages = list(cfg.get("languages", ["en", "ko"]))
+
     if pilot.get("enabled"):
-        languages = list(cfg.get("languages", ["en", "ko"]))
-        lang_cfgs = {}
+        lang_cfgs: dict[str, dict[str, Any]] = {}
+        pilot_triplets = int(pilot.get("triplets_per_lang", 10_000))
         for lang in languages:
-            if lang not in cfg.get("pilot_sources", {}):
-                continue
-            lang_cfgs[lang] = dict(cfg["pilot_sources"][lang])
+            if lang in cfg.get("pilot_sources", {}):
+                lang_cfgs[lang] = dict(cfg["pilot_sources"][lang])
+            elif lang in cfg:
+                lang_cfg = dict(cfg[lang])
+                lang_cfg["target_triplets"] = min(int(lang_cfg.get("target_triplets", pilot_triplets)), pilot_triplets)
+                lang_cfgs[lang] = lang_cfg
         return languages, lang_cfgs
 
-    languages = list(cfg.get("languages", ["en", "ko"]))
     lang_cfgs = {lang: cfg[lang] for lang in languages if lang in cfg}
     return languages, lang_cfgs

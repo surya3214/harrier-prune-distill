@@ -34,7 +34,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", default=None, help="Directory for eval JSON results")
     parser.add_argument(
         "--suite",
-        choices=["en", "ko", "en_ko"],
+        choices=sorted(RETRIEVAL_SUITES.keys()),
         default="en_ko",
         help="Retrieval task suite",
     )

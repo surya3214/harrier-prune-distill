@@ -1,8 +1,11 @@
 # HuggingFace dataset definitions for scripts/01_download_local.py
-# Run on local infra (internet). Outputs deduplicated JSONL/Parquet per language.
+# Run on local infra (internet). Outputs deduplicated parquet per language.
+#
+# Default production: 1M texts/lang (850k C4 + 150k multilingual-NLI).
+# Override via distill.yaml pilot_samples_per_lang or full_samples_per_lang.
 
 en:
-  target_samples: 2300000
+  target_samples: 1000000
   sources:
     - name: c4
       hf_path: allenai/c4
@@ -10,7 +13,7 @@ en:
       split: train
       streaming: true
       text_column: text
-      target_samples: 2000000
+      target_samples: 700000
     - name: all_nli
       hf_path: sentence-transformers/all-nli
       config: pair
@@ -19,10 +22,19 @@ en:
       text_columns:
         - anchor
         - positive
-      target_samples: 300000
+      target_samples: 150000
+    - name: multilingual_nli
+      hf_path: MoritzLaurer/multilingual-NLI-26lang-2mil7
+      split: train
+      streaming: true
+      filter_lang: en
+      text_columns:
+        - premise
+        - hypothesis
+      target_samples: 150000
 
 ko:
-  target_samples: 2300000
+  target_samples: 1000000
   sources:
     - name: c4_ko
       hf_path: allenai/c4
@@ -30,7 +42,7 @@ ko:
       split: train
       streaming: true
       text_column: text
-      target_samples: 2000000
+      target_samples: 700000
     - name: klue_nli
       hf_path: klue/klue
       config: nli
@@ -40,14 +52,289 @@ ko:
         - premise
         - hypothesis
       target_samples: 50000
+    - name: multilingual_nli
+      hf_path: MoritzLaurer/multilingual-NLI-26lang-2mil7
+      split: train
+      streaming: true
+      filter_lang: ko
+      text_columns:
+        - premise
+        - hypothesis
+      target_samples: 100000
     - name: fineweb2_ko
       hf_path: HuggingFaceFW/fineweb-2
       config: kor_Hang
       split: train
       streaming: true
       text_column: text
-      target_samples: 200000
+      target_samples: 150000
       optional: true
+
+ar:
+  target_samples: 1000000
+  sources:
+    - name: c4
+      hf_path: allenai/c4
+      config: ar
+      split: train
+      streaming: true
+      text_column: text
+      target_samples: 850000
+    - name: multilingual_nli
+      hf_path: MoritzLaurer/multilingual-NLI-26lang-2mil7
+      split: train
+      streaming: true
+      filter_lang: ar
+      text_columns: [premise, hypothesis]
+      target_samples: 150000
+
+de:
+  target_samples: 1000000
+  sources:
+    - name: c4
+      hf_path: allenai/c4
+      config: de
+      split: train
+      streaming: true
+      text_column: text
+      target_samples: 850000
+    - name: multilingual_nli
+      hf_path: MoritzLaurer/multilingual-NLI-26lang-2mil7
+      split: train
+      streaming: true
+      filter_lang: de
+      text_columns: [premise, hypothesis]
+      target_samples: 150000
+
+es:
+  target_samples: 1000000
+  sources:
+    - name: c4
+      hf_path: allenai/c4
+      config: es
+      split: train
+      streaming: true
+      text_column: text
+      target_samples: 850000
+    - name: multilingual_nli
+      hf_path: MoritzLaurer/multilingual-NLI-26lang-2mil7
+      split: train
+      streaming: true
+      filter_lang: es
+      text_columns: [premise, hypothesis]
+      target_samples: 150000
+
+fr:
+  target_samples: 1000000
+  sources:
+    - name: c4
+      hf_path: allenai/c4
+      config: fr
+      split: train
+      streaming: true
+      text_column: text
+      target_samples: 850000
+    - name: multilingual_nli
+      hf_path: MoritzLaurer/multilingual-NLI-26lang-2mil7
+      split: train
+      streaming: true
+      filter_lang: fr
+      text_columns: [premise, hypothesis]
+      target_samples: 150000
+
+hi:
+  target_samples: 1000000
+  sources:
+    - name: c4
+      hf_path: allenai/c4
+      config: hi
+      split: train
+      streaming: true
+      text_column: text
+      target_samples: 850000
+    - name: multilingual_nli
+      hf_path: MoritzLaurer/multilingual-NLI-26lang-2mil7
+      split: train
+      streaming: true
+      filter_lang: hi
+      text_columns: [premise, hypothesis]
+      target_samples: 150000
+
+id:
+  target_samples: 1000000
+  sources:
+    - name: c4
+      hf_path: allenai/c4
+      config: id
+      split: train
+      streaming: true
+      text_column: text
+      target_samples: 850000
+    - name: multilingual_nli
+      hf_path: MoritzLaurer/multilingual-NLI-26lang-2mil7
+      split: train
+      streaming: true
+      filter_lang: id
+      text_columns: [premise, hypothesis]
+      target_samples: 150000
+
+ja:
+  target_samples: 1000000
+  sources:
+    - name: c4
+      hf_path: allenai/c4
+      config: ja
+      split: train
+      streaming: true
+      text_column: text
+      target_samples: 800000
+    - name: multilingual_nli
+      hf_path: MoritzLaurer/multilingual-NLI-26lang-2mil7
+      split: train
+      streaming: true
+      filter_lang: ja
+      text_columns: [premise, hypothesis]
+      target_samples: 150000
+    - name: jsick
+      hf_path: hpprc/jsick
+      split: train
+      streaming: false
+      text_columns: [sentence1, sentence2]
+      target_samples: 50000
+      optional: true
+
+it:
+  target_samples: 1000000
+  sources:
+    - name: c4
+      hf_path: allenai/c4
+      config: it
+      split: train
+      streaming: true
+      text_column: text
+      target_samples: 850000
+    - name: multilingual_nli
+      hf_path: MoritzLaurer/multilingual-NLI-26lang-2mil7
+      split: train
+      streaming: true
+      filter_lang: it
+      text_columns: [premise, hypothesis]
+      target_samples: 150000
+
+pt:
+  target_samples: 1000000
+  sources:
+    - name: c4
+      hf_path: allenai/c4
+      config: pt
+      split: train
+      streaming: true
+      text_column: text
+      target_samples: 800000
+    - name: multilingual_nli
+      hf_path: MoritzLaurer/multilingual-NLI-26lang-2mil7
+      split: train
+      streaming: true
+      filter_lang: pt
+      text_columns: [premise, hypothesis]
+      target_samples: 150000
+    - name: assin2
+      hf_path: nilc-nlp/assin2
+      split: train
+      streaming: false
+      text_columns: [sentence1, sentence2]
+      target_samples: 50000
+      optional: true
+
+ru:
+  target_samples: 1000000
+  sources:
+    - name: c4
+      hf_path: allenai/c4
+      config: ru
+      split: train
+      streaming: true
+      text_column: text
+      target_samples: 850000
+    - name: multilingual_nli
+      hf_path: MoritzLaurer/multilingual-NLI-26lang-2mil7
+      split: train
+      streaming: true
+      filter_lang: ru
+      text_columns: [premise, hypothesis]
+      target_samples: 150000
+
+th:
+  target_samples: 1000000
+  sources:
+    - name: c4
+      hf_path: allenai/c4
+      config: th
+      split: train
+      streaming: true
+      text_column: text
+      target_samples: 850000
+    - name: multilingual_nli
+      hf_path: MoritzLaurer/multilingual-NLI-26lang-2mil7
+      split: train
+      streaming: true
+      filter_lang: th
+      text_columns: [premise, hypothesis]
+      target_samples: 150000
+
+vi:
+  target_samples: 1000000
+  sources:
+    - name: c4
+      hf_path: allenai/c4
+      config: vi
+      split: train
+      streaming: true
+      text_column: text
+      target_samples: 850000
+    - name: multilingual_nli
+      hf_path: MoritzLaurer/multilingual-NLI-26lang-2mil7
+      split: train
+      streaming: true
+      filter_lang: vi
+      text_columns: [premise, hypothesis]
+      target_samples: 150000
+
+zh:
+  target_samples: 1000000
+  sources:
+    - name: c4
+      hf_path: allenai/c4
+      config: zh
+      split: train
+      streaming: true
+      text_column: text
+      target_samples: 850000
+    - name: multilingual_nli
+      hf_path: MoritzLaurer/multilingual-NLI-26lang-2mil7
+      split: train
+      streaming: true
+      filter_lang: zh
+      text_columns: [premise, hypothesis]
+      target_samples: 150000
+
+pl:
+  target_samples: 1000000
+  sources:
+    - name: c4
+      hf_path: allenai/c4
+      config: pl
+      split: train
+      streaming: true
+      text_column: text
+      target_samples: 850000
+    - name: multilingual_nli
+      hf_path: MoritzLaurer/multilingual-NLI-26lang-2mil7
+      split: train
+      streaming: true
+      filter_lang: pl
+      text_columns: [premise, hypothesis]
+      target_samples: 150000
 
 dedupe:
   normalize_whitespace: true

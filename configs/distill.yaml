@@ -1,29 +1,30 @@
 # Populate all paths before running. GPU scripts read only from gpu_data_root.
+# Per-language corpus/embedding paths are resolved automatically from data_root + lang code.
 paths:
   local_data_root: ""        # local download target (internet)
   gpu_data_root: ""          # rsync destination on GPU node
   teacher_model: ""          # full 18-layer microsoft/harrier-oss-v1-270m path
   student_model: ""          # 12-layer pruned checkpoint path
   output_dir: ""             # checkpoints, cached embeddings, logs
-  en_corpus: ""              # e.g. {gpu_data_root}/en/corpus.parquet
-  ko_corpus: ""              # e.g. {gpu_data_root}/ko/corpus.parquet
-  en_embeddings: ""          # e.g. {output_dir}/embeddings/en_embeddings.parquet
-  ko_embeddings: ""          # e.g. {output_dir}/embeddings/ko_embeddings.parquet
   retrieval_eval_data_root: "" # e.g. {gpu_data_root}/retrieval_eval
   sts_data_root: ""            # e.g. {gpu_data_root}/sts
-  en_sts_test: ""              # e.g. {sts_data_root}/en/stsbenchmark_test.parquet
-  ko_sts_test: ""              # e.g. {sts_data_root}/ko/korsts_test.parquet
-  en_retrieval_corpus: ""      # e.g. {gpu_data_root}/retrieval/en/corpus.parquet
-  ko_retrieval_corpus: ""      # e.g. {gpu_data_root}/retrieval/ko/corpus.parquet
-  en_retrieval_embeddings: ""  # e.g. {output_dir}/retrieval/embeddings/en_embeddings.parquet
-  ko_retrieval_embeddings: ""  # e.g. {output_dir}/retrieval/embeddings/ko_embeddings.parquet
-  retrieval_checkpoint_en: ""  # e.g. {output_dir}/retrieval/checkpoint_en
-  retrieval_checkpoint_final: ""  # e.g. {output_dir}/retrieval/checkpoint_final
+  # Optional explicit overrides (legacy EN/KO paths still supported):
+  en_corpus: ""
+  ko_corpus: ""
+  en_embeddings: ""
+  ko_embeddings: ""
+  en_sts_test: ""
+  ko_sts_test: ""
+  en_retrieval_corpus: ""
+  ko_retrieval_corpus: ""
+  en_retrieval_embeddings: ""
+  ko_retrieval_embeddings: ""
+  retrieval_checkpoint_en: ""
+  retrieval_checkpoint_final: ""
 
 data:
-  pilot_samples_per_lang: 0    # 0 = disabled; use full_en_samples / full_ko_samples
-  full_en_samples: 2300000
-  full_ko_samples: 2300000
+  pilot_samples_per_lang: 0    # >0 = pilot override for all langs (e.g. 100000)
+  full_samples_per_lang: 1000000  # >0 = uniform cap all langs; 0 = use datasets.yaml per-lang targets
   max_length: 512
   min_text_chars: 20
 
@@ -31,38 +32,48 @@ training:
   embed_batch_size_per_gpu: 192
   train_batch_size_per_gpu: 256
   learning_rate: 1.0e-5
-  num_epochs_en: 1
-  num_epochs_ko: 1
+  default_num_epochs: 1
+  num_epochs_en: 1      # legacy override
+  num_epochs_ko: 1      # legacy override
   warmup_ratio: 0.05
   weight_decay: 0.01
   grad_clip: 1.0
   seed: 42
   prompt_name: sts_query
   losses:
-    mse: 1.0
-    cosine: 0.0
+    mse: 0.8
+    cosine: 0.2
     pairwise_mse: 0.0
   pairwise_triplets_per_batch: 64
 
-# Phase 2: retrieval distillation (see scripts/01_download_retrieval_local.py)
 phases:
   retrieval:
     query_prompt: web_search_query
     doc_prompt: null
+    default_num_epochs: 1
     losses:
-      mse: 1.0
-      cosine: 0.0
-      pairwise_mse: 0.0
+      mse: 0.4
+      cosine: 0.2
+      pairwise_mse: 0.4
     languages:
       - en
+      - ar
+      - de
+      - es
+      - fr
+      - hi
+      - id
+      - ja
       - ko
+      - ru
+      - th
+      - zh
+      - it
+      - pt
+      - vi
+      - pl
     num_epochs_retrieval_en: 1
     num_epochs_retrieval_ko: 1
-    datasets:
-      en:
-        - miracl_hard_negatives_en
-        - msmarco_hard_triplets
-      ko: miracl_hard_negatives
 
 eval:
   tasks:
@@ -76,6 +87,8 @@ eval:
     - STS17
     - STS22.v2
     - KorSTS
+    - JSICK
+    - ASSIN2
   prompt_name: sts_query
   batch_size: 64
   compare_teacher: "microsoft/harrier-oss-v1-270m"
@@ -91,6 +104,29 @@ eval:
       - STS17
       - STS22.v2
     ko: [KorSTS]
+    wave1:
+      - STSBenchmark
+      - STS22.v2
+      - KorSTS
+      - JSICK
+    wave2:
+      - ASSIN2
+      - STS22.v2
+    wave3:
+      - STS22.v2
+    all16:
+      - BIOSSES
+      - SICK-R
+      - STS12
+      - STS13
+      - STS14
+      - STS15
+      - STSBenchmark
+      - STS17
+      - STS22.v2
+      - KorSTS
+      - JSICK
+      - ASSIN2
     multilingual:
       - BIOSSES
       - SICK-R
@@ -102,6 +138,8 @@ eval:
       - STS17
       - STS22.v2
       - KorSTS
+      - JSICK
+      - ASSIN2
     extended:
       - BIOSSES
       - SICK-R
@@ -113,6 +151,8 @@ eval:
       - STS17
       - STS22.v2
       - KorSTS
+      - JSICK
+      - ASSIN2
   local_sts:
     split: test
     tasks:
@@ -126,6 +166,8 @@ eval:
       STS17: en/sts17_en_en_test.parquet
       STS22.v2: en/sts22_v2_en_test.parquet
       KorSTS: ko/korsts_test.parquet
+      JSICK: ja/jsick_test.parquet
+      ASSIN2: pt/assin2_test.parquet
     dev_splits:
       STSBenchmark: en/stsbenchmark_validation.parquet
       KorSTS: ko/korsts_valid.parquet
@@ -139,14 +181,35 @@ eval:
       MSMARCO: eng-Latn
       MIRACLRetrieval:
         - eng-Latn
+        - ara-Arab
+        - deu-Latn
+        - spa-Latn
+        - fra-Latn
+        - hin-Deva
+        - ind-Latn
+        - jpn-Jpan
         - kor-Kore
+        - rus-Cyrl
+        - tha-Thai
+        - zho-Hans
   local_retrieval:
     split: dev
     tasks:
       MSMARCO: en/msmarco_dev
       MIRACLRetrieval:
         en: en/miracl_dev
+        ar: ar/miracl_dev
+        de: de/miracl_dev
+        es: es/miracl_dev
+        fr: fr/miracl_dev
+        hi: hi/miracl_dev
+        id: id/miracl_dev
+        ja: ja/miracl_dev
         ko: ko/miracl_dev
+        ru: ru/miracl_dev
+        th: th/miracl_dev
+        zh: zh/miracl_dev
+      BEIR-PL: pl/beir_pl
 
 debug:
   sample_size: 5000

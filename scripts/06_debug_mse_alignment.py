@@ -14,7 +14,9 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 from harrier_distill.config import (
     get_resolved_paths,
     load_distill_config,
+    parse_lang_list,
     require_path,
+    resolve_embedding_path,
     resolve_sts_dev_paths,
 )
 from harrier_distill.debug import (
@@ -38,7 +40,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Cached teacher embeddings parquet (default: en_embeddings or ko_embeddings from config)",
     )
-    parser.add_argument("--lang", choices=["en", "ko"], required=True)
+    parser.add_argument("--lang", required=True, help="Language code (from languages.yaml)")
     parser.add_argument("--sample-size", type=int, default=None, help="Rows to sample (default from config)")
     parser.add_argument("--seed", type=int, default=None, help="Sampling seed (default from config)")
     parser.add_argument(
@@ -72,11 +74,11 @@ def resolve_teacher_path(args: argparse.Namespace, cfg: dict, paths: dict) -> st
     return "microsoft/harrier-oss-v1-270m"
 
 
-def resolve_embeddings_path(args: argparse.Namespace, paths: dict) -> Path:
+def resolve_embeddings_path(args: argparse.Namespace, cfg: dict) -> Path:
     if args.embeddings:
         return Path(args.embeddings)
-    key = f"{args.lang}_embeddings"
-    return require_path(paths, key)
+    lang = parse_lang_list(args.lang)[0]
+    return resolve_embedding_path(cfg, lang, phase="sts")
 
 
 def main() -> None:
@@ -89,11 +91,12 @@ def main() -> None:
 
     output_root = Path(args.output_dir) if args.output_dir else require_path(paths, "output_dir")
     debug_dir = output_root / "debug"
-    embeddings_path = resolve_embeddings_path(args, paths)
+    embeddings_path = resolve_embeddings_path(args, cfg)
     teacher_path = resolve_teacher_path(args, cfg, paths)
+    lang = parse_lang_list(args.lang)[0]
     pruned_baseline = args.pruned_baseline
     sts_parquet = None
-    if args.lang == "en":
+    if lang == "en":
         dev_paths = resolve_sts_dev_paths(cfg)
         sts_parquet = dev_paths.get("STSBenchmark")
         if sts_parquet is not None and not sts_parquet.exists():
@@ -103,7 +106,7 @@ def main() -> None:
         teacher_path=teacher_path,
         student_path=args.student,
         embeddings_path=embeddings_path,
-        lang=args.lang,
+        lang=lang,
         sample_size=int(
             args.sample_size if args.sample_size is not None else debug_cfg.get("sample_size", 5000)
         ),
@@ -120,7 +123,7 @@ def main() -> None:
     print_alignment_summary(report)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    summary_path = debug_dir / f"mse_debug_{args.lang}_{timestamp}.json"
+    summary_path = debug_dir / f"mse_debug_{lang}_{timestamp}.json"
     save_alignment_report(report, summary_path)
     print(f"\nSaved debug report -> {summary_path}")
 

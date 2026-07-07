@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Download and prepare EN/KO distillation corpora on local infra (internet required)."""
+"""Download and prepare distillation corpora on local infra (internet required)."""
 
 from __future__ import annotations
 
 import argparse
 import hashlib
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from tqdm import tqdm
@@ -13,7 +14,17 @@ from tqdm import tqdm
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from harrier_distill.config import load_datasets_config, load_distill_config, get_resolved_paths, require_path
+from harrier_distill.config import (
+    apply_sample_overrides,
+    get_resolved_paths,
+    load_datasets_config,
+    load_distill_config,
+    parse_lang_list,
+    parquet_sha1,
+    require_path,
+    should_skip_download,
+    write_download_manifest,
+)
 from harrier_distill.data import append_corpus_shard, corpus_row, ensure_dir, merge_parquet_shards
 from harrier_distill.text import normalize_text
 
@@ -22,7 +33,18 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default=str(PROJECT_ROOT / "configs" / "distill.yaml"))
     parser.add_argument("--datasets-config", default=str(PROJECT_ROOT / "configs" / "datasets.yaml"))
-    parser.add_argument("--lang", choices=["en", "ko", "both"], default="both")
+    parser.add_argument(
+        "--lang",
+        default="all",
+        help="Language code, comma-separated list, or 'all' (from languages.yaml)",
+    )
+    parser.add_argument(
+        "--skip-existing",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Skip languages whose corpus.parquet manifest meets target_samples (default: on)",
+    )
+    parser.add_argument("--force", action="store_true", help="Rebuild even when manifest is satisfied")
     return parser.parse_args()
 
 
@@ -51,6 +73,17 @@ def text_from_row(row: dict, text_column: str | None, text_columns: list[str] | 
         value = row.get(text_column)
         return [value] if value else []
     return []
+
+
+def passes_lang_filter(row: dict, source_cfg: dict) -> bool:
+    filter_lang = source_cfg.get("filter_lang")
+    if not filter_lang:
+        return True
+    filter_column = source_cfg.get("filter_column", "language")
+    value = row.get(filter_column)
+    if value is None:
+        return False
+    return str(value).lower() == str(filter_lang).lower()
 
 
 def reservoir_id(lang: str, source: str, text: str) -> str:
@@ -115,6 +148,8 @@ def collect_from_source(
     for row in dataset:
         if len(collected_rows) >= lang_target or added >= source_target:
             break
+        if not passes_lang_filter(row, source_cfg):
+            continue
 
         texts = text_from_row(row, text_column, text_columns)
         for text in texts:
@@ -206,25 +241,37 @@ def main() -> None:
     paths = get_resolved_paths(distill_cfg)
     local_root = require_path(paths, "local_data_root")
 
+    langs = parse_lang_list(args.lang)
+    apply_sample_overrides(datasets_cfg, distill_cfg, langs=langs)
+
     data_cfg = distill_cfg.get("data", {})
     min_chars = int(data_cfg.get("min_text_chars", 20))
     shard_size = int(datasets_cfg.get("output", {}).get("shard_size", 100_000))
     dedupe_cfg = datasets_cfg.get("dedupe", {})
 
-    # Full run only: pilot_samples_per_lang=0 uses datasets.yaml target_samples.
-    pilot_per_lang = int(data_cfg.get("pilot_samples_per_lang", 0))
-    if pilot_per_lang > 0:
-        for lang_key in ("en", "ko"):
-            if lang_key in datasets_cfg:
-                datasets_cfg[lang_key]["target_samples"] = pilot_per_lang
-
-    langs = ["en", "ko"] if args.lang == "both" else [args.lang]
     totals: dict[str, int] = {}
+    skipped: list[str] = []
 
     for lang in langs:
         if lang not in datasets_cfg:
             raise KeyError(f"Language '{lang}' missing from datasets config")
         output_path = local_root / lang / "corpus.parquet"
+        manifest_path = local_root / lang / "manifest.json"
+        target_samples = int(datasets_cfg[lang]["target_samples"])
+
+        if should_skip_download(
+            output_path=output_path,
+            manifest_path=manifest_path,
+            target_rows=target_samples,
+            force=args.force,
+            skip_existing=args.skip_existing,
+        ):
+            manifest = __import__("json").load(open(manifest_path, encoding="utf-8"))
+            totals[lang] = int(manifest.get("rows", 0))
+            skipped.append(lang)
+            print(f"[skip] {lang}: {totals[lang]:,} rows already at {output_path}")
+            continue
+
         totals[lang] = build_language_corpus(
             lang=lang,
             lang_cfg=datasets_cfg[lang],
@@ -233,10 +280,22 @@ def main() -> None:
             output_path=output_path,
             shard_size=shard_size,
         )
+        write_download_manifest(
+            manifest_path,
+            {
+                "lang": lang,
+                "rows": totals[lang],
+                "target_samples": target_samples,
+                "path": str(output_path),
+                "sha1": parquet_sha1(output_path),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+        )
 
     print("\nDownload complete.")
     for lang, count in totals.items():
-        print(f"  {lang}: {count:,} rows at {local_root / lang / 'corpus.parquet'}")
+        status = " (skipped)" if lang in skipped else ""
+        print(f"  {lang}: {count:,} rows at {local_root / lang / 'corpus.parquet'}{status}")
     print("\nNext: rsync local_data_root to gpu_data_root, then run GPU scripts.")
 
 

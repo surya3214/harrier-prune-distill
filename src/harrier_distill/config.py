@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 from typing import Any
 
@@ -50,6 +52,56 @@ def load_retrieval_eval_datasets_config(path: str | Path | None = None) -> dict[
     return load_yaml(config_path)
 
 
+def load_languages_config(path: str | Path | None = None) -> dict[str, Any]:
+    config_path = Path(path) if path else PROJECT_ROOT / "configs" / "languages.yaml"
+    return load_yaml(config_path)
+
+
+def get_training_order(languages_cfg: dict[str, Any] | None = None) -> list[str]:
+    cfg = languages_cfg or load_languages_config()
+    order = cfg.get("training_order")
+    if not order:
+        raise ValueError("languages.yaml missing training_order")
+    return list(order)
+
+
+def get_language_codes(languages_cfg: dict[str, Any] | None = None) -> list[str]:
+    return get_training_order(languages_cfg)
+
+
+def get_language_meta(lang: str, languages_cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    cfg = languages_cfg or load_languages_config()
+    languages = cfg.get("languages", {})
+    if lang not in languages:
+        available = ", ".join(sorted(languages))
+        raise KeyError(f"Unknown language '{lang}'. Available: {available}")
+    return languages[lang]
+
+
+def get_previous_lang(lang: str, languages_cfg: dict[str, Any] | None = None) -> str | None:
+    order = get_training_order(languages_cfg)
+    if lang not in order:
+        raise KeyError(f"Language '{lang}' not in training_order")
+    idx = order.index(lang)
+    return order[idx - 1] if idx > 0 else None
+
+
+def parse_lang_list(
+    lang_arg: str,
+    *,
+    languages_cfg: dict[str, Any] | None = None,
+) -> list[str]:
+    """Parse --lang all | en | en,ko,ar into validated language codes."""
+    order = get_training_order(languages_cfg)
+    if lang_arg == "all":
+        return list(order)
+    codes = [part.strip() for part in lang_arg.split(",") if part.strip()]
+    unknown = [code for code in codes if code not in order]
+    if unknown:
+        raise ValueError(f"Unknown language(s): {', '.join(unknown)}. Available: {', '.join(order)}")
+    return codes
+
+
 def get_phase_config(cfg: dict[str, Any], phase: str) -> dict[str, Any]:
     phases = cfg.get("phases", {})
     if phase not in phases:
@@ -82,62 +134,6 @@ def get_loss_weights(cfg: dict[str, Any], phase: str) -> dict[str, float]:
     return weights
 
 
-def resolve_retrieval_corpus_paths(cfg: dict[str, Any]) -> dict[str, Path]:
-    paths = get_resolved_paths(cfg)
-    root = paths.get("gpu_data_root") or paths.get("local_data_root")
-    if root is None or str(root) == "":
-        raise ValueError("Missing data root for retrieval paths")
-
-    explicit_en = paths.get("en_retrieval_corpus")
-    explicit_ko = paths.get("ko_retrieval_corpus")
-    resolved = {
-        "en": explicit_en if explicit_en is not None and str(explicit_en) != "" else (root / "retrieval" / "en" / "corpus.parquet"),
-        "ko": explicit_ko if explicit_ko is not None and str(explicit_ko) != "" else (root / "retrieval" / "ko" / "corpus.parquet"),
-    }
-    return {lang: Path(path).resolve() for lang, path in resolved.items()}
-
-
-def resolve_retrieval_embedding_paths(cfg: dict[str, Any]) -> dict[str, Path]:
-    paths = get_resolved_paths(cfg)
-    output_root = paths.get("output_dir")
-    if output_root is None or str(output_root) == "":
-        raise ValueError("Missing paths.output_dir for retrieval embedding paths")
-
-    explicit_en = paths.get("en_retrieval_embeddings")
-    explicit_ko = paths.get("ko_retrieval_embeddings")
-    resolved = {
-        "en": explicit_en
-        if explicit_en is not None and str(explicit_en) != ""
-        else (output_root / "retrieval" / "embeddings" / "en_embeddings.parquet"),
-        "ko": explicit_ko
-        if explicit_ko is not None and str(explicit_ko) != ""
-        else (output_root / "retrieval" / "embeddings" / "ko_embeddings.parquet"),
-    }
-    return {lang: Path(path).resolve() for lang, path in resolved.items()}
-
-
-def resolve_retrieval_checkpoint_paths(cfg: dict[str, Any]) -> dict[str, Path]:
-    paths = get_resolved_paths(cfg)
-    output_root = paths.get("output_dir")
-    if output_root is None or str(output_root) == "":
-        raise ValueError("Missing paths.output_dir for retrieval checkpoint paths")
-
-    explicit_en = paths.get("retrieval_checkpoint_en")
-    explicit_final = paths.get("retrieval_checkpoint_final")
-    return {
-        "en": Path(
-            explicit_en
-            if explicit_en is not None and str(explicit_en) != ""
-            else (output_root / "retrieval" / "checkpoint_en")
-        ).resolve(),
-        "final": Path(
-            explicit_final
-            if explicit_final is not None and str(explicit_final) != ""
-            else (output_root / "retrieval" / "checkpoint_final")
-        ).resolve(),
-    }
-
-
 def get_resolved_paths(cfg: dict[str, Any]) -> dict[str, Path | None]:
     paths = cfg.get("paths", {})
     return {key: resolve_path(value) for key, value in paths.items()}
@@ -148,6 +144,180 @@ def require_path(paths: dict[str, Path | None], key: str) -> Path:
     if value is None or str(value) == "":
         raise ValueError(f"Missing required path in configs/distill.yaml: paths.{key}")
     return value
+
+
+def resolve_data_root(cfg: dict[str, Any], *, prefer_gpu: bool = True) -> Path:
+    paths = get_resolved_paths(cfg)
+    if prefer_gpu:
+        root = paths.get("gpu_data_root") or paths.get("local_data_root")
+    else:
+        root = paths.get("local_data_root") or paths.get("gpu_data_root")
+    if root is None or str(root) == "":
+        raise ValueError("Missing data root: set paths.local_data_root or paths.gpu_data_root")
+    return Path(root).resolve()
+
+
+def resolve_output_root(cfg: dict[str, Any]) -> Path:
+    return require_path(get_resolved_paths(cfg), "output_dir")
+
+
+def _explicit_lang_path(paths: dict[str, Path | None], key: str) -> Path | None:
+    value = paths.get(key)
+    if value is not None and str(value) != "":
+        return Path(value).resolve()
+    return None
+
+
+def resolve_corpus_path(cfg: dict[str, Any], lang: str, *, phase: str = "sts") -> Path:
+    paths = get_resolved_paths(cfg)
+    if phase == "retrieval":
+        explicit = _explicit_lang_path(paths, f"{lang}_retrieval_corpus")
+        if explicit is not None:
+            return explicit
+        return resolve_data_root(cfg) / "retrieval" / lang / "corpus.parquet"
+
+    explicit = _explicit_lang_path(paths, f"{lang}_corpus")
+    if explicit is not None:
+        return explicit
+    return resolve_data_root(cfg) / lang / "corpus.parquet"
+
+
+def resolve_embedding_path(cfg: dict[str, Any], lang: str, *, phase: str = "sts") -> Path:
+    paths = get_resolved_paths(cfg)
+    output_root = resolve_output_root(cfg)
+    if phase == "retrieval":
+        explicit = _explicit_lang_path(paths, f"{lang}_retrieval_embeddings")
+        if explicit is not None:
+            return explicit
+        return output_root / "retrieval" / "embeddings" / f"{lang}_embeddings.parquet"
+
+    explicit = _explicit_lang_path(paths, f"{lang}_embeddings")
+    if explicit is not None:
+        return explicit
+    return output_root / "embeddings" / f"{lang}_embeddings.parquet"
+
+
+def resolve_sts_checkpoint_path(cfg: dict[str, Any], lang: str) -> Path:
+    paths = get_resolved_paths(cfg)
+    output_root = resolve_output_root(cfg)
+    explicit = _explicit_lang_path(paths, f"sts_checkpoint_{lang}")
+    if explicit is not None:
+        return explicit
+
+    default = output_root / "checkpoints" / "sts" / lang
+    order = get_training_order()
+    if lang == "en":
+        legacy = output_root / "checkpoint_en"
+        if legacy.exists() and not default.exists():
+            return legacy.resolve()
+    if lang in {order[-1], "ko"}:
+        legacy = output_root / "checkpoint_final"
+        if legacy.exists() and not default.exists():
+            return legacy.resolve()
+    return default
+
+
+def resolve_retrieval_checkpoint_path(cfg: dict[str, Any], lang: str) -> Path:
+    paths = get_resolved_paths(cfg)
+    output_root = resolve_output_root(cfg)
+    explicit = _explicit_lang_path(paths, f"retrieval_checkpoint_{lang}")
+    if explicit is not None:
+        return explicit
+    order = get_training_order()
+    if lang == order[-1]:
+        legacy = paths.get("retrieval_checkpoint_final")
+        if legacy is not None and str(legacy) != "":
+            return Path(legacy).resolve()
+        legacy_path = output_root / "retrieval" / "checkpoint_final"
+        if legacy_path.exists():
+            return legacy_path.resolve()
+    if lang == "en":
+        legacy = paths.get("retrieval_checkpoint_en")
+        if legacy is not None and str(legacy) != "":
+            return Path(legacy).resolve()
+        legacy_path = output_root / "retrieval" / "checkpoint_en"
+        if legacy_path.exists():
+            return legacy_path.resolve()
+    return output_root / "retrieval" / "checkpoints" / lang
+
+
+def get_num_epochs(cfg: dict[str, Any], lang: str, phase: str) -> int:
+    train_cfg = cfg.get("training", {})
+    languages_cfg = load_languages_config()
+    lang_meta = get_language_meta(lang, languages_cfg)
+
+    if phase == "retrieval":
+        phase_cfg = get_phase_config(cfg, "retrieval")
+        legacy_key = f"num_epochs_retrieval_{lang}"
+        if legacy_key in phase_cfg:
+            return int(phase_cfg[legacy_key])
+        if "num_epochs_retrieval" in lang_meta:
+            return int(lang_meta["num_epochs_retrieval"])
+        return int(phase_cfg.get("default_num_epochs", train_cfg.get("default_num_epochs", 1)))
+
+    legacy_key = f"num_epochs_{lang}"
+    if legacy_key in train_cfg:
+        return int(train_cfg[legacy_key])
+    if "num_epochs_sts" in lang_meta:
+        return int(lang_meta["num_epochs_sts"])
+    return int(train_cfg.get("default_num_epochs", 1))
+
+
+def resolve_retrieval_corpus_path(cfg: dict[str, Any], lang: str) -> Path:
+    return resolve_corpus_path(cfg, lang, phase="retrieval")
+
+
+def resolve_retrieval_embedding_path(cfg: dict[str, Any], lang: str) -> Path:
+    return resolve_embedding_path(cfg, lang, phase="retrieval")
+
+
+def resolve_retrieval_corpus_paths(cfg: dict[str, Any]) -> dict[str, Path]:
+    return {lang: resolve_retrieval_corpus_path(cfg, lang) for lang in get_language_codes()}
+
+
+def resolve_retrieval_embedding_paths(cfg: dict[str, Any]) -> dict[str, Path]:
+    return {lang: resolve_retrieval_embedding_path(cfg, lang) for lang in get_language_codes()}
+
+
+def resolve_retrieval_checkpoint_paths(cfg: dict[str, Any]) -> dict[str, Path]:
+    order = get_training_order()
+    paths = {lang: resolve_retrieval_checkpoint_path(cfg, lang) for lang in order}
+    paths["final"] = resolve_retrieval_checkpoint_path(cfg, order[-1])
+    return paths
+
+
+def apply_sample_overrides(
+    datasets_cfg: dict[str, Any],
+    distill_cfg: dict[str, Any],
+    *,
+    langs: list[str],
+) -> None:
+    """Apply pilot_samples_per_lang or full_samples_per_lang overrides in-place."""
+    data_cfg = distill_cfg.get("data", {})
+    pilot = int(data_cfg.get("pilot_samples_per_lang", 0))
+    full = int(data_cfg.get("full_samples_per_lang", 0))
+
+    if pilot > 0:
+        cap = pilot
+    elif full > 0:
+        cap = full
+    else:
+        return
+
+    for lang in langs:
+        if lang not in datasets_cfg or not isinstance(datasets_cfg[lang], dict):
+            continue
+        lang_cfg = datasets_cfg[lang]
+        lang_cfg["target_samples"] = cap
+        sources = lang_cfg.get("sources", [])
+        if not sources:
+            continue
+        total_source = sum(int(s.get("target_samples", 0)) for s in sources)
+        if total_source <= 0:
+            continue
+        for source in sources:
+            frac = int(source.get("target_samples", 0)) / total_source
+            source["target_samples"] = max(int(cap * frac), 1)
 
 
 def resolve_sts_paths(cfg: dict[str, Any]) -> dict[str, Path]:
@@ -227,3 +397,44 @@ def resolve_retrieval_eval_paths(cfg: dict[str, Any]) -> dict[str, Path | dict[s
                 path = (root / path).resolve()
             resolved[task_name] = path
     return resolved
+
+
+def parquet_sha1(path: Path) -> str:
+    digest = hashlib.sha1()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def read_download_manifest(manifest_path: Path) -> dict[str, Any] | None:
+    if not manifest_path.exists():
+        return None
+    with open(manifest_path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def write_download_manifest(manifest_path: Path, entry: dict[str, Any]) -> None:
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(manifest_path, "w", encoding="utf-8") as f:
+        json.dump(entry, f, indent=2, ensure_ascii=False)
+
+
+def should_skip_download(
+    *,
+    output_path: Path,
+    manifest_path: Path,
+    target_rows: int,
+    force: bool,
+    skip_existing: bool,
+) -> bool:
+    if force or not skip_existing:
+        return False
+    if not output_path.exists():
+        return False
+    manifest = read_download_manifest(manifest_path)
+    if manifest is None:
+        return False
+    rows = int(manifest.get("rows", 0))
+    target = int(manifest.get("target_samples", target_rows))
+    return rows >= target

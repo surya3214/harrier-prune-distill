@@ -167,6 +167,19 @@ Checkpoints: `{output_dir}/checkpoints/sts/{lang}/` (legacy: `checkpoint_en`, `c
 
 Epoch count: `default_num_epochs` in `distill.yaml`, per-lang overrides in `languages.yaml`, or legacy `num_epochs_en` keys.
 
+### Training performance knobs
+
+Configured under `training:` in [`configs/distill.yaml`](configs/distill.yaml):
+
+| Knob | Default | Notes |
+|------|---------|-------|
+| `gradient_checkpointing` | `true` | Trades compute for activation memory; often allows a larger `train_batch_size_per_gpu` |
+| `attn_implementation` | `sdpa` | `sdpa`, `flash_attention_2` (needs `flash-attn`), or `none` (eager) |
+| `fused_adamw` | `true` | CUDA fused AdamW when available; falls back automatically |
+| `enable_tf32` | `true` | TF32 matmul on Ampere+ (A100/H100); no-op on V100 |
+
+After enabling checkpointing, probe VRAM (`nvidia-smi`) and raise `train_batch_size_per_gpu` if you were memory-bound. FlashAttention-2 and `torch.compile` are not defaults.
+
 ## Step 6 — Final eval
 
 ```bash

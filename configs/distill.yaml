@@ -40,6 +40,12 @@ training:
   grad_clip: 1.0
   seed: 42
   prompt_name: sts_query
+  # Performance knobs (see README). Raise train_batch_size_per_gpu after a VRAM
+  # probe when gradient_checkpointing is on and memory-bound.
+  gradient_checkpointing: true
+  attn_implementation: sdpa   # sdpa | flash_attention_2 | none
+  fused_adamw: true
+  enable_tf32: true           # Ampere+ (A100/H100); no-op on V100
   losses:
     mse: 0.8
     cosine: 0.2

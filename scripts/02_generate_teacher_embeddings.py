@@ -35,7 +35,7 @@ from harrier_distill.data import (
     write_rank_done_marker,
 )
 from harrier_distill.distributed import cleanup_distributed, init_distributed, is_main_process, release_gpu_resources
-from harrier_distill.model import encode_batch_by_role, get_model_dtype_kwargs
+from harrier_distill.model import encode_batch_by_role, get_model_kwargs, maybe_enable_tf32
 
 
 def parse_args() -> argparse.Namespace:
@@ -147,10 +147,14 @@ def main() -> None:
 
     batch_size = int(train_cfg.get("embed_batch_size_per_gpu", 192))
     max_length = int(data_cfg.get("max_length", 512))
+    attn_implementation = train_cfg.get("attn_implementation", "sdpa")
+    enable_tf32 = bool(train_cfg.get("enable_tf32", True))
+    tf32_enabled = maybe_enable_tf32(enabled=enable_tf32)
 
     if is_main_process(rank):
         print(f"Phase: {args.phase}")
         print(f"Loading corpus: {corpus_path}")
+        print(f"Perf: attn_implementation={attn_implementation} tf32={tf32_enabled}")
 
     columns = ["id", "text", "lang"]
     schema_names = pq.read_schema(corpus_path).names
@@ -168,13 +172,15 @@ def main() -> None:
 
     dataset = CorpusDataset(texts, ids, langs_col, roles, triplet_ids)
     sampler = DistributedSampler(dataset, shuffle=False) if world_size > 1 else None
+    num_workers = 4
     loader = DataLoader(
         dataset,
         batch_size=batch_size,
         sampler=sampler,
         shuffle=False,
-        num_workers=0,
+        num_workers=num_workers,
         pin_memory=device.type == "cuda",
+        persistent_workers=num_workers > 0,
         collate_fn=collate_rows,
     )
 
@@ -187,7 +193,7 @@ def main() -> None:
 
     model = SentenceTransformer(
         str(teacher_path),
-        model_kwargs=get_model_dtype_kwargs(prefer_bf16=True),
+        model_kwargs=get_model_kwargs(prefer_bf16=True, attn_implementation=attn_implementation),
         trust_remote_code=True,
     )
     model = model.to(device)

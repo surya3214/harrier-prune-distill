@@ -1,10 +1,37 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import torch
 import torch.nn.functional as F
-from sentence_transformers import SentenceTransformer
+
+if TYPE_CHECKING:
+    from sentence_transformers import SentenceTransformer
+
+ATTN_IMPLEMENTATION_ALIASES = {
+    "sdpa": "sdpa",
+    "flash_attention_2": "flash_attention_2",
+    "none": "eager",
+    "eager": "eager",
+}
+
+
+def resolve_attn_implementation(attn_implementation: str | None) -> str | None:
+    """Map config attn_implementation to HuggingFace attn_implementation.
+
+    Accepted config values: sdpa, flash_attention_2, none (maps to eager).
+    None / empty leaves HF defaults unchanged.
+    """
+    if attn_implementation is None:
+        return None
+    key = str(attn_implementation).strip().lower()
+    if not key:
+        return None
+    if key not in ATTN_IMPLEMENTATION_ALIASES:
+        allowed = ", ".join(sorted(ATTN_IMPLEMENTATION_ALIASES))
+        raise ValueError(f"Unsupported attn_implementation={attn_implementation!r}. Allowed: {allowed}")
+    return ATTN_IMPLEMENTATION_ALIASES[key]
 
 
 def get_model_dtype_kwargs(*, prefer_bf16: bool | None = None) -> dict[str, torch.dtype]:
@@ -21,16 +48,94 @@ def get_model_dtype_kwargs(*, prefer_bf16: bool | None = None) -> dict[str, torc
     return {"torch_dtype": dtype}
 
 
+def get_model_kwargs(
+    *,
+    prefer_bf16: bool | None = None,
+    attn_implementation: str | None = None,
+) -> dict[str, Any]:
+    """Build SentenceTransformer model_kwargs (dtype + optional attention backend)."""
+    kwargs: dict[str, Any] = dict(get_model_dtype_kwargs(prefer_bf16=prefer_bf16))
+    resolved = resolve_attn_implementation(attn_implementation)
+    if resolved is not None:
+        kwargs["attn_implementation"] = resolved
+    return kwargs
+
+
+def get_transformer_auto_model(model: "SentenceTransformer") -> torch.nn.Module:
+    """Return the HuggingFace backbone under a SentenceTransformer wrapper."""
+    first = model[0]
+    auto_model = getattr(first, "auto_model", None)
+    if auto_model is None:
+        raise AttributeError(
+            "SentenceTransformer module[0] has no auto_model; cannot enable gradient checkpointing"
+        )
+    return auto_model
+
+
+def enable_gradient_checkpointing(model: "SentenceTransformer") -> None:
+    """Enable non-reentrant gradient checkpointing on the HF backbone."""
+    auto_model = get_transformer_auto_model(model)
+    if hasattr(auto_model, "gradient_checkpointing_enable"):
+        auto_model.gradient_checkpointing_enable(
+            gradient_checkpointing_kwargs={"use_reentrant": False}
+        )
+    else:
+        raise AttributeError("Backbone does not support gradient_checkpointing_enable()")
+    config = getattr(auto_model, "config", None)
+    if config is not None and hasattr(config, "use_cache"):
+        config.use_cache = False
+
+
+def maybe_enable_tf32(*, enabled: bool = True) -> bool:
+    """Enable TF32 matmul on Ampere+ GPUs (capability >= 8.0). No-op on V100/CPU.
+
+    Returns True if TF32 was enabled.
+    """
+    if not enabled or not torch.cuda.is_available():
+        return False
+    major, _minor = torch.cuda.get_device_capability()
+    if major < 8:
+        return False
+    torch.set_float32_matmul_precision("high")
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    return True
+
+
+def build_adamw(
+    parameters,
+    *,
+    lr: float,
+    weight_decay: float,
+    fused: bool = True,
+    device_type: str = "cpu",
+) -> torch.optim.AdamW:
+    """Construct AdamW, preferring fused=True on CUDA when requested."""
+    use_fused = bool(fused) and device_type == "cuda"
+    if use_fused:
+        try:
+            return torch.optim.AdamW(parameters, lr=lr, weight_decay=weight_decay, fused=True)
+        except (RuntimeError, TypeError, ValueError):
+            pass
+    return torch.optim.AdamW(parameters, lr=lr, weight_decay=weight_decay)
+
+
 def load_sentence_transformer(
     model_path: str | Path,
     *,
     device: torch.device | str | None = None,
     trust_remote_code: bool = True,
     prefer_bf16: bool | None = None,
-) -> SentenceTransformer:
+    attn_implementation: str | None = None,
+) -> "SentenceTransformer":
+    from sentence_transformers import SentenceTransformer
+
     model = SentenceTransformer(
         str(model_path),
-        model_kwargs=get_model_dtype_kwargs(prefer_bf16=prefer_bf16),
+        model_kwargs=get_model_kwargs(
+            prefer_bf16=prefer_bf16,
+            attn_implementation=attn_implementation,
+        ),
         trust_remote_code=trust_remote_code,
     )
     if device is not None:
@@ -38,7 +143,7 @@ def load_sentence_transformer(
     return model
 
 
-def get_prompt(model: SentenceTransformer, prompt_name: str) -> str:
+def get_prompt(model: "SentenceTransformer", prompt_name: str) -> str:
     prompts = getattr(model, "prompts", None) or {}
     if prompt_name not in prompts:
         available = ", ".join(sorted(prompts.keys())) if prompts else "(none)"
@@ -69,7 +174,7 @@ def _features_to_device(
 
 
 def encode_with_prompt(
-    model: SentenceTransformer,
+    model: "SentenceTransformer",
     texts: list[str],
     *,
     prompt_name: str,
@@ -91,7 +196,7 @@ def encode_with_prompt(
 
 
 def encode_texts(
-    model: SentenceTransformer,
+    model: "SentenceTransformer",
     texts: list[str],
     *,
     device: torch.device,
@@ -116,7 +221,7 @@ def encode_texts(
 
 
 def encode_batch_by_role(
-    model: SentenceTransformer,
+    model: "SentenceTransformer",
     texts: list[str],
     roles: list[str],
     *,
@@ -170,7 +275,7 @@ def encode_batch_by_role(
 
 
 def encode_training_batch_by_role(
-    model: SentenceTransformer,
+    model: "SentenceTransformer",
     texts: list[str],
     roles: list[str] | None,
     *,

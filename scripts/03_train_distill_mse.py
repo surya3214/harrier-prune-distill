@@ -45,7 +45,14 @@ from harrier_distill.losses import (
     pairwise_mse_loss,
     pointwise_mse_loss,
 )
-from harrier_distill.model import encode_training_batch_by_role, encode_with_prompt, get_model_dtype_kwargs
+from harrier_distill.model import (
+    build_adamw,
+    enable_gradient_checkpointing,
+    encode_training_batch_by_role,
+    encode_with_prompt,
+    get_model_kwargs,
+    maybe_enable_tf32,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -238,7 +245,9 @@ def encode_triplet_batch(
     offset = 0
     for size, teacher in zip(sizes, teacher_chunks):
         student_triplets.append(student_all[offset : offset + size])
-        teacher_triplets.append(teacher.to(device=device, dtype=torch.float32))
+        teacher_triplets.append(
+            teacher.to(device=device, dtype=torch.float32, non_blocking=device.type == "cuda")
+        )
         offset += size
     return student_triplets, teacher_triplets
 
@@ -275,9 +284,15 @@ def main() -> None:
     warmup_ratio = float(train_cfg.get("warmup_ratio", 0.05))
     max_length = int(data_cfg.get("max_length", 512))
     seed = int(train_cfg.get("seed", 42))
+    gradient_checkpointing = bool(train_cfg.get("gradient_checkpointing", True))
+    attn_implementation = train_cfg.get("attn_implementation", "sdpa")
+    fused_adamw = bool(train_cfg.get("fused_adamw", True))
+    enable_tf32 = bool(train_cfg.get("enable_tf32", True))
 
     torch.manual_seed(seed + rank)
     triplet_rng = np.random.default_rng(seed + rank)
+
+    tf32_enabled = maybe_enable_tf32(enabled=enable_tf32)
 
     if is_main_process(rank):
         print(f"Phase: {args.phase}")
@@ -285,6 +300,11 @@ def main() -> None:
         print(f"Loss weights: {loss_weights}")
         print(f"Epochs: {num_epochs}")
         print(f"Loading cached embeddings: {embeddings_path}")
+        print(
+            f"Perf: gradient_checkpointing={gradient_checkpointing} "
+            f"attn_implementation={attn_implementation} fused_adamw={fused_adamw} "
+            f"tf32={tf32_enabled}"
+        )
 
     role_column = "role" if args.phase == "retrieval" else None
     triplet_id_column = "triplet_id" if args.phase == "retrieval" else None
@@ -315,13 +335,15 @@ def main() -> None:
     sampler = DistributedSampler(dataset, shuffle=True) if world_size > 1 and use_pointwise else None
     loader = None
     if use_pointwise:
+        num_workers = 4
         loader = DataLoader(
             dataset,
             batch_size=batch_size,
             sampler=sampler,
             shuffle=sampler is None,
-            num_workers=4,
+            num_workers=num_workers,
             pin_memory=True,
+            persistent_workers=num_workers > 0,
             collate_fn=collate_batch,
             drop_last=False,
         )
@@ -333,7 +355,7 @@ def main() -> None:
 
     model = SentenceTransformer(
         str(init_path),
-        model_kwargs=get_model_dtype_kwargs(),
+        model_kwargs=get_model_kwargs(attn_implementation=attn_implementation),
         trust_remote_code=True,
     )
     model = model.to(device)
@@ -341,11 +363,22 @@ def main() -> None:
         model.max_seq_length = max_length
     model.train()
 
+    if gradient_checkpointing:
+        enable_gradient_checkpointing(model)
+        if is_main_process(rank):
+            print("Enabled gradient checkpointing on student backbone")
+
     if world_size > 1 and device.type == "cuda":
         model = DDP(model, device_ids=[device.index], find_unused_parameters=False)
 
     raw_model = model.module if isinstance(model, DDP) else model
-    optimizer = torch.optim.AdamW(raw_model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+    optimizer = build_adamw(
+        raw_model.parameters(),
+        lr=learning_rate,
+        weight_decay=weight_decay,
+        fused=fused_adamw,
+        device_type=device.type,
+    )
 
     total_steps = max(steps_per_epoch * num_epochs, 1)
     warmup_steps = int(total_steps * warmup_ratio)
@@ -384,7 +417,9 @@ def main() -> None:
             if use_pointwise:
                 texts = batch["text"]
                 roles = batch.get("role")
-                teacher_emb = batch["teacher_embedding"].to(device, dtype=torch.float32)
+                teacher_emb = batch["teacher_embedding"].to(
+                    device, dtype=torch.float32, non_blocking=device.type == "cuda"
+                )
 
                 with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"):
                     student_emb = encode_student_batch(

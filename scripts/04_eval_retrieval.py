@@ -18,6 +18,7 @@ from harrier_distill.config import (
     resolve_retrieval_eval_paths,
 )
 from harrier_distill.eval import (
+    RETRIEVAL_SUITES,
     _miracl_eval_subsets,
     evaluate_retrieval,
     get_retrieval_tasks_for_suite,

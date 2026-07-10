@@ -19,10 +19,10 @@ from harrier_distill.config import (
 )
 from harrier_distill.eval import (
     RETRIEVAL_SUITES,
-    _miracl_eval_subsets,
     evaluate_retrieval,
     get_retrieval_tasks_for_suite,
     print_retrieval_summary,
+    resolve_miracl_subsets_for_suite,
     save_eval_summary,
 )
 
@@ -37,7 +37,11 @@ def parse_args() -> argparse.Namespace:
         "--suite",
         choices=sorted(RETRIEVAL_SUITES.keys()),
         default="en_ko",
-        help="Retrieval task suite",
+        help=(
+            "Retrieval task suite. "
+            "en_ko=MSMARCO+MIRACL(en,ko); miracl12=all configured MIRACL langs; "
+            "all16=MSMARCO+MIRACL×12+BEIR-PL"
+        ),
     )
     parser.add_argument(
         "--tasks",
@@ -49,6 +53,11 @@ def parse_args() -> argparse.Namespace:
         "--local-retrieval",
         action="store_true",
         help="Evaluate from local retrieval parquet (offline; no MTEB/HF download)",
+    )
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Stage lines only (disable tqdm bars)",
     )
     return parser.parse_args()
 
@@ -69,6 +78,7 @@ def main() -> None:
     summary_path = eval_dir / f"{label}_{timestamp}.json"
 
     tasks = get_retrieval_tasks_for_suite(args.suite, tasks=args.tasks)
+    miracl_subsets = resolve_miracl_subsets_for_suite(args.suite, retrieval_cfg.get("languages"))
 
     summary = evaluate_retrieval(
         args.model,
@@ -76,10 +86,12 @@ def main() -> None:
         query_prompt=retrieval_cfg.get("query_prompt", "web_search_query"),
         batch_size=int(retrieval_cfg.get("batch_size", eval_cfg.get("batch_size", 64))),
         output_dir=mteb_dir / label if not args.local_retrieval else None,
-        miracl_subsets=_miracl_eval_subsets(retrieval_cfg.get("languages")),
+        miracl_subsets=miracl_subsets,
         use_local_retrieval=args.local_retrieval,
         local_task_paths=resolve_retrieval_eval_paths(cfg) if args.local_retrieval else None,
         max_length=int(cfg.get("data", {}).get("max_length", 512)),
+        label=label,
+        quiet=args.quiet or None,
     )
     summary["label"] = label
     summary["suite"] = args.suite

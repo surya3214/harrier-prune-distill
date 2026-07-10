@@ -13,6 +13,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from harrier_distill.config import get_resolved_paths, load_distill_config, require_path, resolve_sts_paths
 from harrier_distill.eval import STS_SUITES, compare_sts, print_compare_summary, save_eval_summary
+from harrier_distill.eval_parallel import parse_gpu_ids
 
 
 def parse_args() -> argparse.Namespace:
@@ -47,6 +48,32 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Evaluate from local STS parquet (offline; no MTEB/HF download)",
     )
+    parser.add_argument(
+        "--parallel",
+        action="store_true",
+        help="Evaluate teacher/student/baseline on separate GPUs in parallel",
+    )
+    parser.add_argument(
+        "--gpus",
+        default=None,
+        help="Comma-separated GPU ids for --parallel (order: teacher,student,baseline)",
+    )
+    parser.add_argument(
+        "--max-workers",
+        type=int,
+        default=None,
+        help="Max concurrent GPU workers (default: number of assigned GPUs)",
+    )
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Stage lines only (disable tqdm bars)",
+    )
+    parser.add_argument(
+        "--log-dir",
+        default=None,
+        help="Optional directory for per-model logs when using --parallel",
+    )
     return parser.parse_args()
 
 
@@ -72,6 +99,9 @@ def main() -> None:
     eval_dir = output_root / "eval"
     teacher_path = resolve_teacher_path(args, cfg, paths)
 
+    if args.log_dir:
+        Path(args.log_dir).mkdir(parents=True, exist_ok=True)
+
     comparison = compare_sts(
         teacher_path=teacher_path,
         student_path=args.student,
@@ -84,6 +114,10 @@ def main() -> None:
         use_local_sts=args.local_sts,
         local_task_paths=resolve_sts_paths(cfg) if args.local_sts else None,
         max_length=int(cfg.get("data", {}).get("max_length", 512)),
+        parallel=args.parallel,
+        gpu_ids=parse_gpu_ids(args.gpus),
+        max_workers=args.max_workers,
+        quiet=args.quiet or None,
     )
 
     print_compare_summary(comparison)

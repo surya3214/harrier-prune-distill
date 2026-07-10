@@ -29,6 +29,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Evaluate from local STS parquet (offline; no MTEB/HF download)",
     )
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Stage lines only (disable tqdm bars)",
+    )
     return parser.parse_args()
 
 
@@ -55,6 +60,8 @@ def main() -> None:
         use_local_sts=args.local_sts,
         local_task_paths=resolve_sts_paths(cfg) if args.local_sts else None,
         max_length=int(cfg.get("data", {}).get("max_length", 512)),
+        label=label,
+        quiet=args.quiet or None,
     )
     summary["label"] = label
 

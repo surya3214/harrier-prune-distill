@@ -12,6 +12,7 @@ import torch
 from sentence_transformers import SentenceTransformer
 
 from harrier_distill.data import ensure_dir, write_corpus_parquet
+from harrier_distill.eval_progress import StageTimer, log_eval, task_progress
 from harrier_distill.model import encode_texts, encode_with_prompt, load_sentence_transformer
 
 
@@ -191,9 +192,19 @@ def encode_retrieval_queries(
     device: torch.device,
     max_length: int,
     batch_size: int,
+    show_progress: bool = False,
+    quiet: bool | None = None,
 ) -> np.ndarray:
     outputs: list[np.ndarray] = []
-    for start in range(0, len(texts), batch_size):
+    starts = range(0, len(texts), batch_size)
+    n_batches = (len(texts) + batch_size - 1) // batch_size if texts else 0
+    for start in task_progress(
+        starts,
+        desc="encode-queries",
+        total=n_batches,
+        quiet=quiet,
+        disable=not show_progress,
+    ):
         batch = texts[start : start + batch_size]
         emb = encode_with_prompt(
             model,
@@ -214,9 +225,19 @@ def encode_retrieval_corpus(
     device: torch.device,
     max_length: int,
     batch_size: int,
+    show_progress: bool = False,
+    quiet: bool | None = None,
 ) -> np.ndarray:
     outputs: list[np.ndarray] = []
-    for start in range(0, len(texts), batch_size):
+    starts = range(0, len(texts), batch_size)
+    n_batches = (len(texts) + batch_size - 1) // batch_size if texts else 0
+    for start in task_progress(
+        starts,
+        desc="encode-corpus",
+        total=n_batches,
+        quiet=quiet,
+        disable=not show_progress,
+    ):
         batch = texts[start : start + batch_size]
         emb = encode_texts(
             model,
@@ -260,14 +281,23 @@ def score_retrieval_subset(
     qrels: dict[str, dict[str, float]],
     top_k: int = 10,
     corpus_chunk_size: int = 50_000,
+    show_progress: bool = False,
+    quiet: bool | None = None,
 ) -> float:
     """Compute mean nDCG@10 over queries using chunked corpus scoring."""
     if len(query_ids) == 0:
         return 0.0
 
     scores: list[float] = []
+    query_iter = task_progress(
+        list(enumerate(query_ids)),
+        desc="ndcg@10",
+        total=len(query_ids),
+        quiet=quiet,
+        disable=not show_progress,
+    )
 
-    for q_idx, query_id in enumerate(query_ids):
+    for q_idx, query_id in query_iter:
         relevant = qrels.get(query_id, {})
         if not relevant:
             continue
@@ -304,7 +334,17 @@ def evaluate_retrieval_task_local(
     max_length: int,
     batch_size: int,
     corpus_chunk_size: int = 50_000,
+    label: str | None = None,
+    gpu: int | None = None,
+    quiet: bool | None = None,
+    show_progress: bool = True,
 ) -> dict[str, Any]:
+    show_bars = show_progress and not (quiet if quiet is not None else False)
+    log_eval(
+        f"Encoding queries ({len(data.query_texts):,})...",
+        label=label,
+        gpu=gpu,
+    )
     query_emb = encode_retrieval_queries(
         model,
         data.query_texts,
@@ -312,6 +352,13 @@ def evaluate_retrieval_task_local(
         device=device,
         max_length=max_length,
         batch_size=batch_size,
+        show_progress=show_bars,
+        quiet=quiet,
+    )
+    log_eval(
+        f"Encoding corpus ({len(data.doc_texts):,} docs)...",
+        label=label,
+        gpu=gpu,
     )
     corpus_emb = encode_retrieval_corpus(
         model,
@@ -319,7 +366,10 @@ def evaluate_retrieval_task_local(
         device=device,
         max_length=max_length,
         batch_size=batch_size,
+        show_progress=show_bars,
+        quiet=quiet,
     )
+    log_eval("Computing nDCG@10...", label=label, gpu=gpu)
     score = score_retrieval_subset(
         query_emb,
         corpus_emb,
@@ -327,6 +377,8 @@ def evaluate_retrieval_task_local(
         doc_ids=data.doc_ids,
         qrels=data.qrels,
         corpus_chunk_size=corpus_chunk_size,
+        show_progress=show_bars,
+        quiet=quiet,
     )
     return {
         "main_score": score,
@@ -365,10 +417,20 @@ def evaluate_retrieval_local(
     batch_size: int = 64,
     max_length: int = 512,
     corpus_chunk_size: int = 50_000,
+    device: torch.device | str | None = None,
+    label: str | None = None,
+    gpu: int | None = None,
+    quiet: bool | None = None,
 ) -> dict[str, Any]:
     """Evaluate retrieval nDCG@10 from local parquet directories (offline)."""
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    else:
+        device = torch.device(device)
+
+    log_eval(f"Loading model: {model_path}", label=label, gpu=gpu)
     model = load_sentence_transformer(model_path, device=device)
+    log_eval(f"Model loaded on {device}", label=label, gpu=gpu)
 
     summary: dict[str, Any] = {
         "model_path": str(model_path),
@@ -377,15 +439,26 @@ def evaluate_retrieval_local(
         "tasks": {},
     }
 
+    show_progress = not (quiet if quiet is not None else False)
+
     for task_name in task_names:
         if task_name not in local_task_paths:
             raise ValueError(f"No local retrieval data configured for task: {task_name}")
 
+        subset_dirs = list(_iter_task_dirs(task_name, local_task_paths[task_name]))
         subset_results: list[dict[str, Any]] = []
-        for subset, task_dir in _iter_task_dirs(task_name, local_task_paths[task_name]):
+        for subset_idx, (subset, task_dir) in enumerate(subset_dirs, start=1):
             if not task_dir.exists():
                 raise FileNotFoundError(f"Local retrieval dataset not found for {task_name}: {task_dir}")
             data = load_retrieval_eval_parquet(task_dir)
+            subset_label = subset or data.lang or "default"
+            log_eval(
+                f"Task {task_name} [{subset_label}] ({subset_idx}/{len(subset_dirs)}): "
+                f"{len(data.query_ids):,} queries, {len(data.doc_ids):,} docs",
+                label=label,
+                gpu=gpu,
+            )
+            timer = StageTimer()
             result = evaluate_retrieval_task_local(
                 model,
                 data,
@@ -394,6 +467,15 @@ def evaluate_retrieval_local(
                 max_length=max_length,
                 batch_size=batch_size,
                 corpus_chunk_size=corpus_chunk_size,
+                label=label,
+                gpu=gpu,
+                quiet=quiet,
+                show_progress=show_progress,
+            )
+            log_eval(
+                f"{task_name} [{subset_label}]: nDCG@10={result['main_score']:.4f} ({timer.elapsed_str()})",
+                label=label,
+                gpu=gpu,
             )
             subset_results.append(result)
 

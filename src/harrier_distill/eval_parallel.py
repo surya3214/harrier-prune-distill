@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
+import tempfile
 import time
-from multiprocessing import get_context
 from pathlib import Path
 from typing import Any, Callable
 
@@ -160,7 +161,7 @@ def _prepare_worker_env(job: dict[str, Any]) -> None:
 
     Must run before any ``import torch`` / CUDA init in this process.
     """
-    # Prefer an explicit physical id captured in the parent before spawn.
+    # Prefer an explicit physical id captured in the parent before launch.
     visible = job.get("cuda_visible_devices")
     if visible is None:
         visible = str(job["gpu_id"])
@@ -252,76 +253,86 @@ def _retrieval_eval_worker(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         log_eval(f"Worker released gpu={gpu_id}", label=label, gpu=gpu_id)
 
 
-def _parallel_process_entry(
-    worker: Callable[[dict[str, Any]], tuple[str, dict[str, Any]]],
+def _worker_kind(worker: Callable[..., Any]) -> str:
+    name = getattr(worker, "__name__", "")
+    if name == "_sts_eval_worker":
+        return "sts"
+    if name == "_retrieval_eval_worker":
+        return "retrieval"
+    if name == "_probe_eval_worker":
+        return "probe"
+    raise ValueError(f"Unsupported parallel worker: {worker!r}")
+
+
+def _probe_eval_worker(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """Test-only worker marker; real probe work runs in eval_cuda_worker."""
+    return str(job["label"]), {"cvd": os.environ.get("CUDA_VISIBLE_DEVICES")}
+
+
+def _src_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def _launch_worker_subprocess(
     job: dict[str, Any],
-    conn: Any,
-) -> None:
-    """Spawn-process entrypoint.
-
-    Sends the result over ``conn``, then ``os._exit`` so PyTorch CUDA atexit
-    destructors cannot raise ``CUDA-capable devices are busy`` after a successful
-    eval (a common failure mode with ProcessPoolExecutor worker teardown).
-    """
-    exit_code = 1
-    label = str(job.get("label", "?"))
-    gpu_id = int(job.get("gpu_id", -1))
-    try:
-        result_label, summary = worker(job)
-        conn.send(("ok", result_label, make_jsonable(summary)))
-        exit_code = 0
-    except BaseException as exc:  # noqa: BLE001 - must report any worker failure
-        try:
-            conn.send(("err", label, f"{type(exc).__name__}: {exc}"))
-        except Exception:
-            pass
-        exit_code = 1
-    finally:
-        try:
-            release_cuda_memory()
-        except Exception:
-            pass
-        try:
-            from harrier_distill.eval_progress import log_eval
-
-            log_eval(f"Worker process exit gpu={gpu_id} code={exit_code}", label=label, gpu=gpu_id)
-        except Exception:
-            pass
-        try:
-            conn.close()
-        except Exception:
-            pass
-        os._exit(exit_code)
-
-
-def _drain_process(
-    process: Any,
-    conn: Any,
-    label: str,
     *,
-    join_timeout: float = 120.0,
+    work_dir: Path,
+) -> tuple[subprocess.Popen[Any], Path, str]:
+    """Start one eval worker with CVD set before the interpreter starts."""
+    from harrier_distill.eval_progress import log_eval
+
+    label = str(job["label"])
+    physical = str(job.get("cuda_visible_devices", job["gpu_id"]))
+    job_path = work_dir / f"{label}.job.json"
+    result_path = work_dir / f"{label}.result.json"
+    job_path.write_text(json.dumps(make_jsonable(job)), encoding="utf-8")
+    if result_path.exists():
+        result_path.unlink()
+
+    env = os.environ.copy()
+    env["CUDA_VISIBLE_DEVICES"] = physical
+    # Ensure `python -m harrier_distill...` resolves in editable/src layouts.
+    src = str(_src_root())
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = src if not existing else os.pathsep.join([src, existing])
+
+    log_eval(
+        f"Launching subprocess CUDA_VISIBLE_DEVICES={physical}",
+        label=label,
+        gpu=int(job["gpu_id"]),
+    )
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "harrier_distill.eval_cuda_worker",
+            "--job",
+            str(job_path),
+            "--result",
+            str(result_path),
+        ],
+        env=env,
+        stdout=None,
+        stderr=None,
+    )
+    return process, result_path, label
+
+
+def _read_worker_result(
+    result_path: Path,
+    label: str,
+    returncode: int | None,
 ) -> tuple[str, dict[str, Any]]:
-    try:
-        message = conn.recv()
-    except EOFError as exc:
-        process.join(timeout=join_timeout)
-        raise RuntimeError(f"[eval][{label}] FAILED: worker exited before sending a result") from exc
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
-
-    process.join(timeout=join_timeout)
-    if process.is_alive():
-        process.kill()
-        process.join(timeout=10)
-        raise RuntimeError(f"[eval][{label}] FAILED: worker hung after sending result")
-
-    status = message[0]
-    if status == "ok":
-        return message[1], message[2]
-    raise RuntimeError(f"[eval][{message[1]}] FAILED: {message[2]}")
+    if not result_path.exists():
+        raise RuntimeError(
+            f"[eval][{label}] FAILED: worker exited (code={returncode}) without writing a result"
+        )
+    payload = json.loads(result_path.read_text(encoding="utf-8"))
+    if not payload.get("ok"):
+        raise RuntimeError(
+            f"[eval][{payload.get('label', label)}] FAILED: {payload.get('error', 'unknown')}"
+        )
+    return str(payload["label"]), dict(payload["summary"])
 
 
 def run_parallel_jobs(
@@ -330,65 +341,62 @@ def run_parallel_jobs(
     worker: Callable[[dict[str, Any]], tuple[str, dict[str, Any]]],
     max_workers: int | None = None,
 ) -> dict[str, dict[str, Any]]:
-    """Run eval jobs in spawn processes; fail-fast on first error.
+    """Run eval jobs in isolated subprocesses; fail-fast on first error.
 
-    Uses one process per job (wave-scheduled by unique GPU count). Workers send
-    JSON-safe results over a pipe and terminate with ``os._exit`` to avoid CUDA
-    atexit crashes after ``Worker released gpu`` logs.
+    Critical multi-GPU requirement: each child is started with
+    ``CUDA_VISIBLE_DEVICES=<one gpu>`` in its environment *before* Python/torch
+    import. Spawned multiprocessing children re-import the compare script and
+    initialize CUDA on all parent-visible GPUs first, which causes
+    ``CUDA-capable devices are busy`` when two workers run concurrently.
     """
     if not jobs:
         return {}
 
+    kind = _worker_kind(worker)
     unique_gpus = {int(job["gpu_id"]) for job in jobs}
     workers = max_workers or len(unique_gpus)
     workers = max(1, min(workers, len(jobs), len(unique_gpus)))
-    ctx = get_context("spawn")
     summaries: dict[str, dict[str, Any]] = {}
 
-    pending = list(jobs)
-    active: list[tuple[Any, Any, str]] = []
+    pending = [dict(job, worker_kind=kind) for job in jobs]
+    active: list[tuple[subprocess.Popen[Any], Path, str]] = []
 
-    try:
-        while pending or active:
-            while pending and len(active) < workers:
-                job = pending.pop(0)
-                parent_conn, child_conn = ctx.Pipe(duplex=False)
-                process = ctx.Process(
-                    target=_parallel_process_entry,
-                    args=(worker, job, child_conn),
-                    daemon=False,
-                )
-                process.start()
-                child_conn.close()
-                active.append((process, parent_conn, str(job["label"])))
+    with tempfile.TemporaryDirectory(prefix="harrier-eval-parallel-") as tmp:
+        work_dir = Path(tmp)
+        try:
+            while pending or active:
+                while pending and len(active) < workers:
+                    job = pending.pop(0)
+                    active.append(_launch_worker_subprocess(job, work_dir=work_dir))
 
-            progressed = False
-            still_active: list[tuple[Any, Any, str]] = []
-            for process, conn, label in active:
-                if process.is_alive() and not conn.poll():
-                    still_active.append((process, conn, label))
-                    continue
-                progressed = True
-                result_label, summary = _drain_process(process, conn, label)
-                summaries[result_label] = summary
+                progressed = False
+                still_active: list[tuple[subprocess.Popen[Any], Path, str]] = []
+                for process, result_path, label in active:
+                    code = process.poll()
+                    if code is None:
+                        still_active.append((process, result_path, label))
+                        continue
+                    progressed = True
+                    result_label, summary = _read_worker_result(result_path, label, code)
+                    if code != 0:
+                        raise RuntimeError(
+                            f"[eval][{result_label}] FAILED: worker exited with code={code}"
+                        )
+                    summaries[result_label] = summary
 
-            active = still_active
-            if not progressed and active:
-                # Avoid busy-spin while workers are still running.
-                time.sleep(0.05)
-    except Exception:
-        for process, conn, _label in active:
-            try:
-                conn.close()
-            except Exception:
-                pass
-            if process.is_alive():
-                process.terminate()
-                process.join(timeout=10)
-                if process.is_alive():
-                    process.kill()
-                    process.join(timeout=5)
-        raise
+                active = still_active
+                if not progressed and active:
+                    time.sleep(0.05)
+        except Exception:
+            for process, _result_path, _label in active:
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=5)
+            raise
 
     return summaries
 

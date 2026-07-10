@@ -440,61 +440,67 @@ def evaluate_retrieval_local(
     }
 
     show_progress = not (quiet if quiet is not None else False)
+    from harrier_distill.eval_parallel import release_cuda_memory
 
-    for task_name in task_names:
-        if task_name not in local_task_paths:
-            raise ValueError(f"No local retrieval data configured for task: {task_name}")
+    try:
+        for task_name in task_names:
+            if task_name not in local_task_paths:
+                raise ValueError(f"No local retrieval data configured for task: {task_name}")
 
-        subset_dirs = list(_iter_task_dirs(task_name, local_task_paths[task_name]))
-        subset_results: list[dict[str, Any]] = []
-        for subset_idx, (subset, task_dir) in enumerate(subset_dirs, start=1):
-            if not task_dir.exists():
-                raise FileNotFoundError(f"Local retrieval dataset not found for {task_name}: {task_dir}")
-            data = load_retrieval_eval_parquet(task_dir)
-            subset_label = subset or data.lang or "default"
-            log_eval(
-                f"Task {task_name} [{subset_label}] ({subset_idx}/{len(subset_dirs)}): "
-                f"{len(data.query_ids):,} queries, {len(data.doc_ids):,} docs",
-                label=label,
-                gpu=gpu,
-            )
-            timer = StageTimer()
-            result = evaluate_retrieval_task_local(
-                model,
-                data,
-                query_prompt=query_prompt,
-                device=device,
-                max_length=max_length,
-                batch_size=batch_size,
-                corpus_chunk_size=corpus_chunk_size,
-                label=label,
-                gpu=gpu,
-                quiet=quiet,
-                show_progress=show_progress,
-            )
-            log_eval(
-                f"{task_name} [{subset_label}]: nDCG@10={result['main_score']:.4f} ({timer.elapsed_str()})",
-                label=label,
-                gpu=gpu,
-            )
-            subset_results.append(result)
+            subset_dirs = list(_iter_task_dirs(task_name, local_task_paths[task_name]))
+            subset_results: list[dict[str, Any]] = []
+            for subset_idx, (subset, task_dir) in enumerate(subset_dirs, start=1):
+                if not task_dir.exists():
+                    raise FileNotFoundError(f"Local retrieval dataset not found for {task_name}: {task_dir}")
+                data = load_retrieval_eval_parquet(task_dir)
+                subset_label = subset or data.lang or "default"
+                log_eval(
+                    f"Task {task_name} [{subset_label}] ({subset_idx}/{len(subset_dirs)}): "
+                    f"{len(data.query_ids):,} queries, {len(data.doc_ids):,} docs",
+                    label=label,
+                    gpu=gpu,
+                )
+                timer = StageTimer()
+                result = evaluate_retrieval_task_local(
+                    model,
+                    data,
+                    query_prompt=query_prompt,
+                    device=device,
+                    max_length=max_length,
+                    batch_size=batch_size,
+                    corpus_chunk_size=corpus_chunk_size,
+                    label=label,
+                    gpu=gpu,
+                    quiet=quiet,
+                    show_progress=show_progress,
+                )
+                log_eval(
+                    f"{task_name} [{subset_label}]: nDCG@10={result['main_score']:.4f} ({timer.elapsed_str()})",
+                    label=label,
+                    gpu=gpu,
+                )
+                subset_results.append(result)
 
-        if task_name == "MIRACLRetrieval" and len(subset_results) > 1:
-            main_score = float(np.mean([r["main_score"] for r in subset_results]))
-            summary["tasks"][task_name] = {
-                "main_score": main_score,
-                "scores": subset_results[0]["scores"],
-                "source_path": ", ".join(r["source_path"] for r in subset_results),
-                "query_count": sum(r["query_count"] for r in subset_results),
-                "corpus_count": sum(r["corpus_count"] for r in subset_results),
-                "qrel_count": sum(r["qrel_count"] for r in subset_results),
-                "split": subset_results[0]["split"],
-                "subsets": {r["lang"]: r for r in subset_results},
-            }
-        else:
-            summary["tasks"][task_name] = subset_results[0]
+            if task_name == "MIRACLRetrieval" and len(subset_results) > 1:
+                main_score = float(np.mean([r["main_score"] for r in subset_results]))
+                summary["tasks"][task_name] = {
+                    "main_score": main_score,
+                    "scores": subset_results[0]["scores"],
+                    "source_path": ", ".join(r["source_path"] for r in subset_results),
+                    "query_count": sum(r["query_count"] for r in subset_results),
+                    "corpus_count": sum(r["corpus_count"] for r in subset_results),
+                    "qrel_count": sum(r["qrel_count"] for r in subset_results),
+                    "split": subset_results[0]["split"],
+                    "subsets": {r["lang"]: r for r in subset_results},
+                }
+            else:
+                summary["tasks"][task_name] = subset_results[0]
 
-    return summary
+        return summary
+    finally:
+        release_cuda_memory(model)
+        model = None
+        log_eval("Released model GPU memory", label=label, gpu=gpu)
 
 
 def get_local_retrieval_task_paths(

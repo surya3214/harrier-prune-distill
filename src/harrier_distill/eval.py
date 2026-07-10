@@ -8,7 +8,9 @@ from harrier_distill.eval_parallel import (
     _retrieval_eval_worker,
     _sts_eval_worker,
     assign_gpus_to_models,
+    release_cuda_memory,
     resolve_gpu_ids,
+    resolve_physical_cuda_id,
     run_parallel_jobs,
     serialize_retrieval_paths,
     serialize_sts_paths,
@@ -214,43 +216,48 @@ def evaluate_retrieval(
     if resolved_device is None:
         resolved_device = "cuda" if torch.cuda.is_available() else "cpu"
     model = load_sentence_transformer(model_path, device=resolved_device)
-    _apply_retrieval_prompts(model, task_names, query_prompt)
-    log_eval(f"Running MTEB retrieval tasks: {', '.join(task_names)}", label=label, gpu=gpu)
+    try:
+        _apply_retrieval_prompts(model, task_names, query_prompt)
+        log_eval(f"Running MTEB retrieval tasks: {', '.join(task_names)}", label=label, gpu=gpu)
 
-    import mteb
+        import mteb
 
-    mteb_tasks = mteb.get_tasks(tasks=task_names)
-    evaluation = mteb.MTEB(tasks=mteb_tasks)
-    show_bars = not (quiet if quiet is not None else False)
-    encode_kwargs = {
-        "batch_size": batch_size,
-        "show_progress_bar": show_bars,
-        "prompt_name": query_prompt,
-    }
-    eval_subsets = miracl_subsets if miracl_subsets is not None else ["en", "ko"]
-
-    results = evaluation.run(
-        model,
-        output_folder=str(output_dir) if output_dir else None,
-        encode_kwargs=encode_kwargs,
-        eval_subsets=eval_subsets if "MIRACLRetrieval" in task_names else None,
-    )
-
-    summary: dict[str, Any] = {
-        "model_path": str(model_path),
-        "backend": "mteb",
-        "query_prompt": query_prompt,
-        "tasks": {},
-    }
-    for result in results:
-        task_name = result.task_name
-        summary["tasks"][task_name] = {
-            "main_score": _extract_main_score(result),
-            "scores": result.scores,
-            "hf_subset": getattr(result, "hf_subset", None),
-            "languages": getattr(result, "languages", None),
+        mteb_tasks = mteb.get_tasks(tasks=task_names)
+        evaluation = mteb.MTEB(tasks=mteb_tasks)
+        show_bars = not (quiet if quiet is not None else False)
+        encode_kwargs = {
+            "batch_size": batch_size,
+            "show_progress_bar": show_bars,
+            "prompt_name": query_prompt,
         }
-    return summary
+        eval_subsets = miracl_subsets if miracl_subsets is not None else ["en", "ko"]
+
+        results = evaluation.run(
+            model,
+            output_folder=str(output_dir) if output_dir else None,
+            encode_kwargs=encode_kwargs,
+            eval_subsets=eval_subsets if "MIRACLRetrieval" in task_names else None,
+        )
+
+        summary: dict[str, Any] = {
+            "model_path": str(model_path),
+            "backend": "mteb",
+            "query_prompt": query_prompt,
+            "tasks": {},
+        }
+        for result in results:
+            task_name = result.task_name
+            summary["tasks"][task_name] = {
+                "main_score": _extract_main_score(result),
+                "scores": result.scores,
+                "hf_subset": getattr(result, "hf_subset", None),
+                "languages": getattr(result, "languages", None),
+            }
+        return summary
+    finally:
+        release_cuda_memory(model)
+        model = None
+        log_eval("Released model GPU memory", label=label, gpu=gpu)
 
 
 def compare_retrieval(
@@ -315,11 +322,13 @@ def compare_retrieval(
         jobs = []
         for label, model_path, gpu_id in assigned:
             model_mteb_dir = mteb_root / label if mteb_root else None
+            physical_gpu = resolve_physical_cuda_id(gpu_id)
             jobs.append(
                 {
                     "label": label,
                     "model_path": model_path,
                     "gpu_id": gpu_id,
+                    "cuda_visible_devices": str(physical_gpu),
                     "tasks": task_names,
                     "query_prompt": query_prompt,
                     "batch_size": batch_size,
@@ -332,7 +341,11 @@ def compare_retrieval(
                     "log_path": str(log_root / f"{label}.log") if log_root else None,
                 }
             )
-            log_eval(f"Queued on gpu={gpu_id} path={model_path}", label=label, gpu=gpu_id)
+            log_eval(
+                f"Queued on gpu={gpu_id} (physical={physical_gpu}) path={model_path}",
+                label=label,
+                gpu=gpu_id,
+            )
         summaries = run_parallel_jobs(
             jobs,
             worker=_retrieval_eval_worker,
@@ -546,28 +559,33 @@ def evaluate_sts(
     if resolved_device is None:
         resolved_device = "cuda" if torch.cuda.is_available() else "cpu"
     model = load_sentence_transformer(model_path, device=resolved_device)
-    _apply_sts_prompts(model, task_names, prompt_name)
-    log_eval(f"Running MTEB STS tasks: {', '.join(task_names)}", label=label, gpu=gpu)
+    try:
+        _apply_sts_prompts(model, task_names, prompt_name)
+        log_eval(f"Running MTEB STS tasks: {', '.join(task_names)}", label=label, gpu=gpu)
 
-    import mteb
+        import mteb
 
-    mteb_tasks = resolve_mteb_sts_task_objects(task_names)
-    evaluation = mteb.MTEB(tasks=mteb_tasks)
-    show_bars = not (quiet if quiet is not None else False)
-    results = evaluation.run(
-        model,
-        output_folder=str(output_dir) if output_dir else None,
-        encode_kwargs={"batch_size": batch_size, "show_progress_bar": show_bars},
-    )
+        mteb_tasks = resolve_mteb_sts_task_objects(task_names)
+        evaluation = mteb.MTEB(tasks=mteb_tasks)
+        show_bars = not (quiet if quiet is not None else False)
+        results = evaluation.run(
+            model,
+            output_folder=str(output_dir) if output_dir else None,
+            encode_kwargs={"batch_size": batch_size, "show_progress_bar": show_bars},
+        )
 
-    summary: dict[str, Any] = {"model_path": str(model_path), "backend": "mteb", "tasks": {}}
-    for result in results:
-        task_name = result.task_name
-        summary["tasks"][task_name] = {
-            "main_score": _extract_main_score(result),
-            "scores": result.scores,
-        }
-    return summary
+        summary: dict[str, Any] = {"model_path": str(model_path), "backend": "mteb", "tasks": {}}
+        for result in results:
+            task_name = result.task_name
+            summary["tasks"][task_name] = {
+                "main_score": _extract_main_score(result),
+                "scores": result.scores,
+            }
+        return summary
+    finally:
+        release_cuda_memory(model)
+        model = None
+        log_eval("Released model GPU memory", label=label, gpu=gpu)
 
 
 def _build_comparison_row(
@@ -660,11 +678,13 @@ def compare_sts(
         jobs = []
         for label, model_path, gpu_id in assigned:
             model_mteb_dir = mteb_root / label if mteb_root and not use_local_sts else None
+            physical_gpu = resolve_physical_cuda_id(gpu_id)
             jobs.append(
                 {
                     "label": label,
                     "model_path": model_path,
                     "gpu_id": gpu_id,
+                    "cuda_visible_devices": str(physical_gpu),
                     "tasks": task_names,
                     "prompt_name": prompt_name,
                     "batch_size": batch_size,
@@ -676,7 +696,11 @@ def compare_sts(
                     "log_path": str(log_root / f"{label}.log") if log_root else None,
                 }
             )
-            log_eval(f"Queued on gpu={gpu_id} path={model_path}", label=label, gpu=gpu_id)
+            log_eval(
+                f"Queued on gpu={gpu_id} (physical={physical_gpu}) path={model_path}",
+                label=label,
+                gpu=gpu_id,
+            )
         summaries = run_parallel_jobs(
             jobs,
             worker=_sts_eval_worker,

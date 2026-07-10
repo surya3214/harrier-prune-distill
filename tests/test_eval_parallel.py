@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -15,7 +16,9 @@ from harrier_distill.eval import resolve_miracl_subsets_for_suite
 from harrier_distill.eval_parallel import (
     assign_gpus_to_models,
     parse_gpu_ids,
+    probe_visible_cuda_device_count,
     resolve_gpu_ids,
+    resolve_physical_cuda_id,
 )
 from harrier_distill.eval_progress import format_elapsed, is_quiet, log_eval, task_progress
 
@@ -74,6 +77,25 @@ class EvalParallelTests(unittest.TestCase):
         self.assertIsNone(parse_gpu_ids(None))
         self.assertEqual(parse_gpu_ids([3, 1]), [3, 1])
 
+    def test_probe_visible_cuda_device_count_from_cvd(self) -> None:
+        with patch.dict("os.environ", {"CUDA_VISIBLE_DEVICES": "0,2,5"}):
+            self.assertEqual(probe_visible_cuda_device_count(), 3)
+        with patch.dict("os.environ", {"CUDA_VISIBLE_DEVICES": ""}):
+            self.assertEqual(probe_visible_cuda_device_count(), 0)
+
+    def test_resolve_physical_cuda_id_respects_cvd(self) -> None:
+        self.assertEqual(resolve_physical_cuda_id(1, visible="4,5,6"), 5)
+        self.assertEqual(resolve_physical_cuda_id(0, visible=None), 0)
+
+    def test_resolve_gpu_ids_uses_probe_not_torch(self) -> None:
+        with patch(
+            "harrier_distill.eval_parallel.probe_visible_cuda_device_count",
+            return_value=3,
+        ) as probe:
+            ids = resolve_gpu_ids(parallel=True, n_models=3)
+        probe.assert_called_once()
+        self.assertEqual(ids, [0, 1, 2])
+
     def test_resolve_gpu_ids_sequential_when_not_parallel(self) -> None:
         self.assertEqual(resolve_gpu_ids(parallel=False, n_models=3, available=4), [])
 
@@ -97,6 +119,40 @@ class EvalParallelTests(unittest.TestCase):
             assigned,
             [("teacher", "a", 0), ("student", "b", 1), ("baseline", "c", 0)],
         )
+
+    def test_run_parallel_jobs_uses_one_shot_workers(self) -> None:
+        from harrier_distill.eval_parallel import run_parallel_jobs
+
+        captured: dict[str, Any] = {}
+
+        class FakePool:
+            def __init__(self, *args, **kwargs):
+                captured.update(kwargs)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def submit(self, fn, job):
+                class Fut:
+                    def result(self_inner):
+                        return fn(job)
+
+                return Fut()
+
+        def worker(job):
+            return job["label"], {"ok": True}
+
+        with patch("harrier_distill.eval_parallel.ProcessPoolExecutor", FakePool):
+            with patch("harrier_distill.eval_parallel.as_completed", lambda futs: list(futs)):
+                out = run_parallel_jobs(
+                    [{"label": "teacher", "gpu_id": 0}, {"label": "student", "gpu_id": 1}],
+                    worker=worker,
+                )
+        self.assertEqual(captured.get("max_tasks_per_child"), 1)
+        self.assertEqual(set(out), {"teacher", "student"})
 
 
 class MiraclSuiteFilterTests(unittest.TestCase):

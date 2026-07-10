@@ -208,6 +208,8 @@ def evaluate_sts_local(
     else:
         device = torch.device(device)
 
+    from harrier_distill.eval_parallel import release_cuda_memory
+
     log_eval(f"Loading model: {model_path}", label=label, gpu=gpu)
     model = load_sentence_transformer(model_path, device=device)
     log_eval(f"Model loaded on {device}", label=label, gpu=gpu)
@@ -217,46 +219,51 @@ def evaluate_sts_local(
         "backend": "local",
         "tasks": {},
     }
-    task_items = list(task_paths.items())
-    for idx, (task_name, parquet_path) in enumerate(task_items, start=1):
-        if not parquet_path.exists():
-            raise FileNotFoundError(f"Local STS dataset not found for {task_name}: {parquet_path}")
-        pairs = load_sts_parquet(parquet_path)
-        n_pairs = len(pairs.score)
-        log_eval(
-            f"Task {idx}/{len(task_items)}: {task_name} ({n_pairs:,} pairs) — encoding...",
-            label=label,
-            gpu=gpu,
-        )
-        timer = StageTimer()
-        score = compute_sts_spearman(
-            model,
-            pairs,
-            prompt_name=prompt_name,
-            device=device,
-            max_length=max_length,
-            batch_size=batch_size,
-            show_progress=not (quiet if quiet is not None else False),
-            quiet=quiet,
-        )
-        log_eval(
-            f"Task {idx}/{len(task_items)}: {task_name} — Spearman={score:.4f} ({timer.elapsed_str()})",
-            label=label,
-            gpu=gpu,
-        )
-        summary["tasks"][task_name] = {
-            "main_score": score,
-            "scores": {
-                "test": [
-                    {
-                        "main_score": score,
-                        "pearson": None,
-                        "spearman": score,
-                    }
-                ]
-            },
-            "source_path": str(parquet_path),
-            "pair_count": n_pairs,
-            "split": pairs.split,
-        }
-    return summary
+    try:
+        task_items = list(task_paths.items())
+        for idx, (task_name, parquet_path) in enumerate(task_items, start=1):
+            if not parquet_path.exists():
+                raise FileNotFoundError(f"Local STS dataset not found for {task_name}: {parquet_path}")
+            pairs = load_sts_parquet(parquet_path)
+            n_pairs = len(pairs.score)
+            log_eval(
+                f"Task {idx}/{len(task_items)}: {task_name} ({n_pairs:,} pairs) — encoding...",
+                label=label,
+                gpu=gpu,
+            )
+            timer = StageTimer()
+            score = compute_sts_spearman(
+                model,
+                pairs,
+                prompt_name=prompt_name,
+                device=device,
+                max_length=max_length,
+                batch_size=batch_size,
+                show_progress=not (quiet if quiet is not None else False),
+                quiet=quiet,
+            )
+            log_eval(
+                f"Task {idx}/{len(task_items)}: {task_name} — Spearman={score:.4f} ({timer.elapsed_str()})",
+                label=label,
+                gpu=gpu,
+            )
+            summary["tasks"][task_name] = {
+                "main_score": score,
+                "scores": {
+                    "test": [
+                        {
+                            "main_score": score,
+                            "pearson": None,
+                            "spearman": score,
+                        }
+                    ]
+                },
+                "source_path": str(parquet_path),
+                "pair_count": n_pairs,
+                "split": pairs.split,
+            }
+        return summary
+    finally:
+        release_cuda_memory(model)
+        model = None
+        log_eval("Released model GPU memory", label=label, gpu=gpu)

@@ -217,7 +217,7 @@ python scripts/05_compare_sts.py --config configs/distill.yaml \
   --parallel --gpus 0,1,2
 ```
 
-Eval prints stage progress (`[eval][teacher] Task 3/12: ...`) during model load and per-task scoring. Use `--quiet` to keep stage lines but disable tqdm bars. Under `--parallel`, bars are off on shared stdout by default (stage lines stay prefixed with `[label][gpu=N]`). Pass `--log-dir DIR` to write per-model detail (including tqdm) to `DIR/{teacher,student,baseline}.log`. 3-way parallel needs ~3× VRAM. Parallel workers set `CUDA_VISIBLE_DEVICES` before importing torch, use one-shot processes, and release GPU memory after each model (avoids parent CUDA init / “devices are busy”).
+Eval prints stage progress (`[eval][teacher] Task 3/12: ...`) during model load and per-task scoring. Use `--quiet` to keep stage lines but disable tqdm bars. Under `--parallel`, bars are off on shared stdout by default (stage lines stay prefixed with `[label][gpu=N]`). Pass `--log-dir DIR` to write per-model detail (including tqdm) to `DIR/{teacher,student,baseline}.log`. 3-way parallel needs ~3× VRAM. Parallel workers set `CUDA_VISIBLE_DEVICES` before importing torch, use one-shot spawn processes that `os._exit` after sending results (avoids CUDA atexit “devices are busy” after release), and free GPU memory after each model.
 
 Suites: `en`, `ko`, `wave1`, `wave2`, `wave3`, `all16`, `multilingual`, `extended`.
 

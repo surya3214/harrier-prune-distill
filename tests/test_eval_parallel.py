@@ -23,6 +23,16 @@ from harrier_distill.eval_parallel import (
 from harrier_distill.eval_progress import format_elapsed, is_quiet, log_eval, task_progress
 
 
+def _smoke_parallel_worker(job: dict) -> tuple[str, dict]:
+    return job["label"], {"gpu": job["gpu_id"], "ok": True}
+
+
+def _failing_parallel_worker(job: dict) -> tuple[str, dict]:
+    if job["label"] == "student":
+        raise RuntimeError("boom")
+    return job["label"], {"ok": True}
+
+
 class EvalProgressTests(unittest.TestCase):
     def test_format_elapsed(self) -> None:
         self.assertEqual(format_elapsed(12.3), "12.3s")
@@ -120,39 +130,44 @@ class EvalParallelTests(unittest.TestCase):
             [("teacher", "a", 0), ("student", "b", 1), ("baseline", "c", 0)],
         )
 
-    def test_run_parallel_jobs_uses_one_shot_workers(self) -> None:
+    def test_make_jsonable_strips_numpy(self) -> None:
+        import numpy as np
+        from harrier_distill.eval_parallel import make_jsonable
+
+        payload = {"score": np.float32(0.5), "path": Path("/tmp/x")}
+        out = make_jsonable(payload)
+        self.assertEqual(out["score"], 0.5)
+        self.assertEqual(out["path"], "/tmp/x")
+        self.assertIsInstance(out["score"], float)
+
+    def test_run_parallel_jobs_spawn_smoke(self) -> None:
         from harrier_distill.eval_parallel import run_parallel_jobs
 
-        captured: dict[str, Any] = {}
-
-        class FakePool:
-            def __init__(self, *args, **kwargs):
-                captured.update(kwargs)
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *args):
-                return False
-
-            def submit(self, fn, job):
-                class Fut:
-                    def result(self_inner):
-                        return fn(job)
-
-                return Fut()
-
-        def worker(job):
-            return job["label"], {"ok": True}
-
-        with patch("harrier_distill.eval_parallel.ProcessPoolExecutor", FakePool):
-            with patch("harrier_distill.eval_parallel.as_completed", lambda futs: list(futs)):
-                out = run_parallel_jobs(
-                    [{"label": "teacher", "gpu_id": 0}, {"label": "student", "gpu_id": 1}],
-                    worker=worker,
-                )
-        self.assertEqual(captured.get("max_tasks_per_child"), 1)
+        out = run_parallel_jobs(
+            [
+                {"label": "teacher", "gpu_id": 0},
+                {"label": "student", "gpu_id": 1},
+            ],
+            worker=_smoke_parallel_worker,
+            max_workers=2,
+        )
         self.assertEqual(set(out), {"teacher", "student"})
+        self.assertTrue(out["teacher"]["ok"])
+        self.assertEqual(out["student"]["gpu"], 1)
+
+    def test_run_parallel_jobs_fail_fast(self) -> None:
+        from harrier_distill.eval_parallel import run_parallel_jobs
+
+        with self.assertRaises(RuntimeError) as ctx:
+            run_parallel_jobs(
+                [
+                    {"label": "teacher", "gpu_id": 0},
+                    {"label": "student", "gpu_id": 1},
+                ],
+                worker=_failing_parallel_worker,
+                max_workers=2,
+            )
+        self.assertIn("[eval][student] FAILED", str(ctx.exception))
 
 
 class MiraclSuiteFilterTests(unittest.TestCase):

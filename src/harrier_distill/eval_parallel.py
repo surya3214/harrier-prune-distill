@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from multiprocessing import get_context
 from pathlib import Path
@@ -20,6 +21,47 @@ def parse_gpu_ids(gpus: str | list[int] | None) -> list[int] | None:
     return [int(part.strip()) for part in text.split(",") if part.strip()]
 
 
+def probe_visible_cuda_device_count() -> int:
+    """Count visible GPUs without initializing a CUDA context in this process.
+
+    Calling ``torch.cuda.device_count()`` in the parent before spawn can leave
+    contexts on every device and trigger
+    ``CUDA error: CUDA-capable devices are busy`` in workers (especially under
+    exclusive-process compute mode).
+    """
+    cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if cvd is not None:
+        parts = [part.strip() for part in cvd.split(",") if part.strip() != ""]
+        # Explicit empty CVD means "no GPUs".
+        return len(parts)
+
+    try:
+        output = subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=index", "--format=csv,noheader"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=10,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError, OSError):
+        return 0
+
+    return sum(1 for line in output.splitlines() if line.strip())
+
+
+def resolve_physical_cuda_id(logical_id: int, *, visible: str | None = None) -> int:
+    """Map a logical GPU index to a physical id under ``CUDA_VISIBLE_DEVICES``."""
+    cvd = os.environ.get("CUDA_VISIBLE_DEVICES") if visible is None else visible
+    if cvd is None or str(cvd).strip() == "":
+        return int(logical_id)
+    parts = [part.strip() for part in str(cvd).split(",") if part.strip() != ""]
+    idx = int(logical_id)
+    if idx < 0 or idx >= len(parts):
+        raise ValueError(
+            f"Logical GPU id {idx} out of range for CUDA_VISIBLE_DEVICES={cvd!r}"
+        )
+    return int(parts[idx])
+
+
 def resolve_gpu_ids(
     *,
     parallel: bool,
@@ -32,12 +74,7 @@ def resolve_gpu_ids(
         return []
 
     if available is None:
-        try:
-            import torch
-
-            available = int(torch.cuda.device_count()) if torch.cuda.is_available() else 0
-        except Exception:
-            available = 0
+        available = probe_visible_cuda_device_count()
 
     if available < 1:
         return []
@@ -65,10 +102,43 @@ def assign_gpus_to_models(
     return assigned
 
 
+def release_cuda_memory(model: Any | None = None) -> None:
+    """Move ``model`` to CPU (if given), drop the local ref, and free CUDA cache.
+
+    Callers should also clear their own reference (``model = None`` / ``del model``)
+    after this returns so the allocator can reclaim VRAM.
+    """
+    import gc
+
+    if model is not None:
+        try:
+            if hasattr(model, "to"):
+                model.to("cpu")
+        except Exception:
+            pass
+        del model
+
+    gc.collect()
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
 def _prepare_worker_env(job: dict[str, Any]) -> None:
-    """Configure CUDA remapping, quiet mode, and optional per-model log file."""
-    gpu_id = int(job["gpu_id"])
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+    """Configure CUDA remapping, quiet mode, and optional per-model log file.
+
+    Must run before any ``import torch`` / CUDA init in this process.
+    """
+    # Prefer an explicit physical id captured in the parent before spawn.
+    visible = job.get("cuda_visible_devices")
+    if visible is None:
+        visible = str(job["gpu_id"])
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(visible)
     # Parallel workers never share tqdm on stdout; stage lines still print.
     os.environ["EVAL_QUIET"] = "1"
     log_path = job.get("log_path")
@@ -91,23 +161,27 @@ def _sts_eval_worker(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
 
     label = str(job["label"])
     log_eval(f"Worker starting on physical gpu={gpu_id}", label=label, gpu=gpu_id)
-    summary = evaluate_sts(
-        job["model_path"],
-        tasks=job["tasks"],
-        prompt_name=job["prompt_name"],
-        batch_size=job["batch_size"],
-        output_dir=job.get("output_dir"),
-        use_local_sts=job["use_local_sts"],
-        local_task_paths={k: Path(v) for k, v in (job.get("local_task_paths") or {}).items()}
-        if job.get("local_task_paths")
-        else None,
-        max_length=job["max_length"],
-        device="cuda:0",
-        label=label,
-        gpu=gpu_id,
-        quiet=True,
-    )
-    return label, summary
+    try:
+        summary = evaluate_sts(
+            job["model_path"],
+            tasks=job["tasks"],
+            prompt_name=job["prompt_name"],
+            batch_size=job["batch_size"],
+            output_dir=job.get("output_dir"),
+            use_local_sts=job["use_local_sts"],
+            local_task_paths={k: Path(v) for k, v in (job.get("local_task_paths") or {}).items()}
+            if job.get("local_task_paths")
+            else None,
+            max_length=job["max_length"],
+            device="cuda:0",
+            label=label,
+            gpu=gpu_id,
+            quiet=True,
+        )
+        return label, summary
+    finally:
+        release_cuda_memory()
+        log_eval(f"Worker released gpu={gpu_id}", label=label, gpu=gpu_id)
 
 
 def _retrieval_eval_worker(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
@@ -130,22 +204,26 @@ def _retrieval_eval_worker(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
             else:
                 resolved_paths[task_name] = Path(value)
 
-    summary = evaluate_retrieval(
-        job["model_path"],
-        tasks=job["tasks"],
-        query_prompt=job["query_prompt"],
-        batch_size=job["batch_size"],
-        output_dir=job.get("output_dir"),
-        miracl_subsets=job.get("miracl_subsets"),
-        use_local_retrieval=job["use_local_retrieval"],
-        local_task_paths=resolved_paths,
-        max_length=job["max_length"],
-        device="cuda:0",
-        label=label,
-        gpu=gpu_id,
-        quiet=True,
-    )
-    return label, summary
+    try:
+        summary = evaluate_retrieval(
+            job["model_path"],
+            tasks=job["tasks"],
+            query_prompt=job["query_prompt"],
+            batch_size=job["batch_size"],
+            output_dir=job.get("output_dir"),
+            miracl_subsets=job.get("miracl_subsets"),
+            use_local_retrieval=job["use_local_retrieval"],
+            local_task_paths=resolved_paths,
+            max_length=job["max_length"],
+            device="cuda:0",
+            label=label,
+            gpu=gpu_id,
+            quiet=True,
+        )
+        return label, summary
+    finally:
+        release_cuda_memory()
+        log_eval(f"Worker released gpu={gpu_id}", label=label, gpu=gpu_id)
 
 
 def run_parallel_jobs(
@@ -154,16 +232,26 @@ def run_parallel_jobs(
     worker: Callable[[dict[str, Any]], tuple[str, dict[str, Any]]],
     max_workers: int | None = None,
 ) -> dict[str, dict[str, Any]]:
-    """Run eval jobs in spawn workers; fail-fast on first error."""
+    """Run eval jobs in spawn workers; fail-fast on first error.
+
+    Uses ``max_tasks_per_child=1`` so each worker process sets
+    ``CUDA_VISIBLE_DEVICES`` before importing torch, then exits and releases
+    the GPU instead of being reused with a stale CUDA context.
+    """
     if not jobs:
         return {}
 
-    workers = max_workers or len(jobs)
-    workers = max(1, min(workers, len(jobs)))
+    unique_gpus = {int(job["gpu_id"]) for job in jobs}
+    workers = max_workers or len(unique_gpus)
+    workers = max(1, min(workers, len(jobs), len(unique_gpus)))
     ctx = get_context("spawn")
     summaries: dict[str, dict[str, Any]] = {}
 
-    with ProcessPoolExecutor(max_workers=workers, mp_context=ctx) as pool:
+    with ProcessPoolExecutor(
+        max_workers=workers,
+        mp_context=ctx,
+        max_tasks_per_child=1,
+    ) as pool:
         futures = {pool.submit(worker, job): job["label"] for job in jobs}
         try:
             for future in as_completed(futures):

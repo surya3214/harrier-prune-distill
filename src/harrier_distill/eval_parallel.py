@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
-from concurrent.futures import ProcessPoolExecutor, as_completed
+import time
 from multiprocessing import get_context
 from pathlib import Path
 from typing import Any, Callable
@@ -102,6 +103,27 @@ def assign_gpus_to_models(
     return assigned
 
 
+def make_jsonable(obj: Any) -> Any:
+    """Convert numpy/path values into plain JSON-safe Python objects for IPC."""
+
+    def _default(value: Any) -> Any:
+        if hasattr(value, "item"):
+            try:
+                return value.item()
+            except Exception:
+                pass
+        if isinstance(value, Path):
+            return str(value)
+        if hasattr(value, "tolist"):
+            try:
+                return value.tolist()
+            except Exception:
+                pass
+        return str(value)
+
+    return json.loads(json.dumps(obj, default=_default))
+
+
 def release_cuda_memory(model: Any | None = None) -> None:
     """Move ``model`` to CPU (if given), drop the local ref, and free CUDA cache.
 
@@ -123,8 +145,12 @@ def release_cuda_memory(model: Any | None = None) -> None:
         import torch
 
         if torch.cuda.is_available():
-            torch.cuda.synchronize()
-            torch.cuda.empty_cache()
+            # Prefer empty_cache over synchronize: synchronize can raise
+            # "devices are busy" during teardown and is not required to free VRAM.
+            try:
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
     except Exception:
         pass
 
@@ -178,7 +204,7 @@ def _sts_eval_worker(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
             gpu=gpu_id,
             quiet=True,
         )
-        return label, summary
+        return label, make_jsonable(summary)
     finally:
         release_cuda_memory()
         log_eval(f"Worker released gpu={gpu_id}", label=label, gpu=gpu_id)
@@ -220,10 +246,82 @@ def _retrieval_eval_worker(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
             gpu=gpu_id,
             quiet=True,
         )
-        return label, summary
+        return label, make_jsonable(summary)
     finally:
         release_cuda_memory()
         log_eval(f"Worker released gpu={gpu_id}", label=label, gpu=gpu_id)
+
+
+def _parallel_process_entry(
+    worker: Callable[[dict[str, Any]], tuple[str, dict[str, Any]]],
+    job: dict[str, Any],
+    conn: Any,
+) -> None:
+    """Spawn-process entrypoint.
+
+    Sends the result over ``conn``, then ``os._exit`` so PyTorch CUDA atexit
+    destructors cannot raise ``CUDA-capable devices are busy`` after a successful
+    eval (a common failure mode with ProcessPoolExecutor worker teardown).
+    """
+    exit_code = 1
+    label = str(job.get("label", "?"))
+    gpu_id = int(job.get("gpu_id", -1))
+    try:
+        result_label, summary = worker(job)
+        conn.send(("ok", result_label, make_jsonable(summary)))
+        exit_code = 0
+    except BaseException as exc:  # noqa: BLE001 - must report any worker failure
+        try:
+            conn.send(("err", label, f"{type(exc).__name__}: {exc}"))
+        except Exception:
+            pass
+        exit_code = 1
+    finally:
+        try:
+            release_cuda_memory()
+        except Exception:
+            pass
+        try:
+            from harrier_distill.eval_progress import log_eval
+
+            log_eval(f"Worker process exit gpu={gpu_id} code={exit_code}", label=label, gpu=gpu_id)
+        except Exception:
+            pass
+        try:
+            conn.close()
+        except Exception:
+            pass
+        os._exit(exit_code)
+
+
+def _drain_process(
+    process: Any,
+    conn: Any,
+    label: str,
+    *,
+    join_timeout: float = 120.0,
+) -> tuple[str, dict[str, Any]]:
+    try:
+        message = conn.recv()
+    except EOFError as exc:
+        process.join(timeout=join_timeout)
+        raise RuntimeError(f"[eval][{label}] FAILED: worker exited before sending a result") from exc
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    process.join(timeout=join_timeout)
+    if process.is_alive():
+        process.kill()
+        process.join(timeout=10)
+        raise RuntimeError(f"[eval][{label}] FAILED: worker hung after sending result")
+
+    status = message[0]
+    if status == "ok":
+        return message[1], message[2]
+    raise RuntimeError(f"[eval][{message[1]}] FAILED: {message[2]}")
 
 
 def run_parallel_jobs(
@@ -232,11 +330,11 @@ def run_parallel_jobs(
     worker: Callable[[dict[str, Any]], tuple[str, dict[str, Any]]],
     max_workers: int | None = None,
 ) -> dict[str, dict[str, Any]]:
-    """Run eval jobs in spawn workers; fail-fast on first error.
+    """Run eval jobs in spawn processes; fail-fast on first error.
 
-    Uses ``max_tasks_per_child=1`` so each worker process sets
-    ``CUDA_VISIBLE_DEVICES`` before importing torch, then exits and releases
-    the GPU instead of being reused with a stale CUDA context.
+    Uses one process per job (wave-scheduled by unique GPU count). Workers send
+    JSON-safe results over a pipe and terminate with ``os._exit`` to avoid CUDA
+    atexit crashes after ``Worker released gpu`` logs.
     """
     if not jobs:
         return {}
@@ -247,26 +345,50 @@ def run_parallel_jobs(
     ctx = get_context("spawn")
     summaries: dict[str, dict[str, Any]] = {}
 
-    with ProcessPoolExecutor(
-        max_workers=workers,
-        mp_context=ctx,
-        max_tasks_per_child=1,
-    ) as pool:
-        futures = {pool.submit(worker, job): job["label"] for job in jobs}
-        try:
-            for future in as_completed(futures):
-                label = futures[future]
-                try:
-                    result_label, summary = future.result()
-                except Exception as exc:
-                    for pending in futures:
-                        pending.cancel()
-                    raise RuntimeError(f"[eval][{label}] FAILED: {exc}") from exc
+    pending = list(jobs)
+    active: list[tuple[Any, Any, str]] = []
+
+    try:
+        while pending or active:
+            while pending and len(active) < workers:
+                job = pending.pop(0)
+                parent_conn, child_conn = ctx.Pipe(duplex=False)
+                process = ctx.Process(
+                    target=_parallel_process_entry,
+                    args=(worker, job, child_conn),
+                    daemon=False,
+                )
+                process.start()
+                child_conn.close()
+                active.append((process, parent_conn, str(job["label"])))
+
+            progressed = False
+            still_active: list[tuple[Any, Any, str]] = []
+            for process, conn, label in active:
+                if process.is_alive() and not conn.poll():
+                    still_active.append((process, conn, label))
+                    continue
+                progressed = True
+                result_label, summary = _drain_process(process, conn, label)
                 summaries[result_label] = summary
-        except Exception:
-            for pending in futures:
-                pending.cancel()
-            raise
+
+            active = still_active
+            if not progressed and active:
+                # Avoid busy-spin while workers are still running.
+                time.sleep(0.05)
+    except Exception:
+        for process, conn, _label in active:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=10)
+                if process.is_alive():
+                    process.kill()
+                    process.join(timeout=5)
+        raise
 
     return summaries
 

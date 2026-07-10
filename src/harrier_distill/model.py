@@ -120,6 +120,14 @@ def build_adamw(
     return torch.optim.AdamW(parameters, lr=lr, weight_decay=weight_decay)
 
 
+def apply_max_seq_length(model: "SentenceTransformer", max_seq_length: int) -> None:
+    """Cap tokenization length early (same mechanism as train/embed scripts)."""
+    if max_seq_length < 1:
+        raise ValueError(f"max_seq_length must be >= 1, got {max_seq_length}")
+    if hasattr(model, "max_seq_length"):
+        model.max_seq_length = int(max_seq_length)
+
+
 def load_sentence_transformer(
     model_path: str | Path,
     *,
@@ -127,6 +135,7 @@ def load_sentence_transformer(
     trust_remote_code: bool = True,
     prefer_bf16: bool | None = None,
     attn_implementation: str | None = None,
+    max_seq_length: int | None = None,
 ) -> "SentenceTransformer":
     from sentence_transformers import SentenceTransformer
 
@@ -140,6 +149,8 @@ def load_sentence_transformer(
     )
     if device is not None:
         model = model.to(device)
+    if max_seq_length is not None:
+        apply_max_seq_length(model, max_seq_length)
     return model
 
 

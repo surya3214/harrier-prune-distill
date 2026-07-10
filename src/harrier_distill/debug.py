@@ -341,8 +341,12 @@ def run_alignment_report(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     texts, cached_emb = sample_embedding_rows(embeddings_path, sample_size, seed)
-    teacher_model = load_sentence_transformer(teacher_path, device=device)
-    student_model = load_sentence_transformer(student_path, device=device)
+    teacher_model = load_sentence_transformer(
+        teacher_path, device=device, max_seq_length=max_length
+    )
+    student_model = load_sentence_transformer(
+        student_path, device=device, max_seq_length=max_length
+    )
 
     cache_alignment = validate_cache_alignment(
         teacher_model,
@@ -380,7 +384,9 @@ def run_alignment_report(
     }
 
     if pruned_baseline_path is not None:
-        baseline_model = load_sentence_transformer(pruned_baseline_path, device=device)
+        baseline_model = load_sentence_transformer(
+            pruned_baseline_path, device=device, max_seq_length=max_length
+        )
         baseline_emb = encode_texts(
             baseline_model,
             texts,

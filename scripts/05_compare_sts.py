@@ -11,12 +11,12 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from harrier_distill.config import get_resolved_paths, load_distill_config, require_path, resolve_sts_paths
-from harrier_distill.eval import STS_SUITES, compare_sts, print_compare_summary, save_eval_summary
-from harrier_distill.eval_parallel import parse_gpu_ids
-
 
 def parse_args() -> argparse.Namespace:
+    # Import suite names lazily so spawn/subprocess children that re-import this
+    # script do not pull torch before CUDA_VISIBLE_DEVICES is set.
+    from harrier_distill.eval import STS_SUITES
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default=str(PROJECT_ROOT / "configs" / "distill.yaml"))
     parser.add_argument("--student", required=True, help="Local distilled checkpoint path")
@@ -90,6 +90,10 @@ def resolve_teacher_path(args: argparse.Namespace, cfg: dict, paths: dict) -> st
 
 
 def main() -> None:
+    from harrier_distill.config import get_resolved_paths, load_distill_config, require_path, resolve_sts_paths
+    from harrier_distill.eval import compare_sts, print_compare_summary, save_eval_summary
+    from harrier_distill.eval_parallel import parse_gpu_ids
+
     args = parse_args()
     cfg = load_distill_config(args.config)
     paths = get_resolved_paths(cfg)

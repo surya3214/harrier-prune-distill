@@ -11,23 +11,10 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from harrier_distill.config import (
-    get_resolved_paths,
-    load_distill_config,
-    require_path,
-    resolve_retrieval_eval_paths,
-)
-from harrier_distill.eval import (
-    RETRIEVAL_SUITES,
-    compare_retrieval,
-    print_retrieval_compare_summary,
-    resolve_miracl_subsets_for_suite,
-    save_eval_summary,
-)
-from harrier_distill.eval_parallel import parse_gpu_ids
-
 
 def parse_args() -> argparse.Namespace:
+    from harrier_distill.eval import RETRIEVAL_SUITES
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default=str(PROJECT_ROOT / "configs" / "distill.yaml"))
     parser.add_argument("--teacher", default=None, help="Teacher checkpoint (defaults to eval.compare_teacher)")
@@ -85,6 +72,20 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    from harrier_distill.config import (
+        get_resolved_paths,
+        load_distill_config,
+        require_path,
+        resolve_retrieval_eval_paths,
+    )
+    from harrier_distill.eval import (
+        compare_retrieval,
+        print_retrieval_compare_summary,
+        resolve_miracl_subsets_for_suite,
+        save_eval_summary,
+    )
+    from harrier_distill.eval_parallel import parse_gpu_ids
+
     args = parse_args()
     cfg = load_distill_config(args.config)
     paths = get_resolved_paths(cfg)

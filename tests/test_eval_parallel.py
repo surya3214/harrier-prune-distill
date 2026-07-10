@@ -14,23 +14,15 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from harrier_distill.eval import resolve_miracl_subsets_for_suite
 from harrier_distill.eval_parallel import (
+    _probe_eval_worker,
     assign_gpus_to_models,
     parse_gpu_ids,
     probe_visible_cuda_device_count,
     resolve_gpu_ids,
     resolve_physical_cuda_id,
+    run_parallel_jobs,
 )
 from harrier_distill.eval_progress import format_elapsed, is_quiet, log_eval, task_progress
-
-
-def _smoke_parallel_worker(job: dict) -> tuple[str, dict]:
-    return job["label"], {"gpu": job["gpu_id"], "ok": True}
-
-
-def _failing_parallel_worker(job: dict) -> tuple[str, dict]:
-    if job["label"] == "student":
-        raise RuntimeError("boom")
-    return job["label"], {"ok": True}
 
 
 class EvalProgressTests(unittest.TestCase):
@@ -77,7 +69,6 @@ class EvalProgressTests(unittest.TestCase):
             with patch.dict("os.environ", {"EVAL_LOG_FILE": str(log_path), "EVAL_QUIET": "1"}):
                 items = list(task_progress([1, 2, 3], desc="encode", quiet=True))
             self.assertEqual(items, [1, 2, 3])
-            # tqdm should have written progress into the per-model log
             self.assertIn("encode", log_path.read_text(encoding="utf-8"))
 
 
@@ -140,34 +131,64 @@ class EvalParallelTests(unittest.TestCase):
         self.assertEqual(out["path"], "/tmp/x")
         self.assertIsInstance(out["score"], float)
 
-    def test_run_parallel_jobs_spawn_smoke(self) -> None:
-        from harrier_distill.eval_parallel import run_parallel_jobs
-
-        out = run_parallel_jobs(
-            [
-                {"label": "teacher", "gpu_id": 0},
-                {"label": "student", "gpu_id": 1},
-            ],
-            worker=_smoke_parallel_worker,
-            max_workers=2,
-        )
-        self.assertEqual(set(out), {"teacher", "student"})
-        self.assertTrue(out["teacher"]["ok"])
-        self.assertEqual(out["student"]["gpu"], 1)
-
-    def test_run_parallel_jobs_fail_fast(self) -> None:
-        from harrier_distill.eval_parallel import run_parallel_jobs
-
-        with self.assertRaises(RuntimeError) as ctx:
-            run_parallel_jobs(
+    def test_multi_gpu_subprocess_isolates_cvd(self) -> None:
+        """Concurrent workers must each see only their own CUDA_VISIBLE_DEVICES."""
+        with patch.dict("os.environ", {"CUDA_VISIBLE_DEVICES": "0,1,2,3"}):
+            out = run_parallel_jobs(
                 [
-                    {"label": "teacher", "gpu_id": 0},
-                    {"label": "student", "gpu_id": 1},
+                    {
+                        "label": "teacher",
+                        "gpu_id": 0,
+                        "cuda_visible_devices": "0",
+                    },
+                    {
+                        "label": "student",
+                        "gpu_id": 1,
+                        "cuda_visible_devices": "1",
+                    },
                 ],
-                worker=_failing_parallel_worker,
+                worker=_probe_eval_worker,
                 max_workers=2,
             )
-        self.assertIn("[eval][student] FAILED", str(ctx.exception))
+        self.assertEqual(out["teacher"]["cvd"], "0")
+        self.assertEqual(out["student"]["cvd"], "1")
+
+    def test_launch_sets_cvd_in_child_env(self) -> None:
+        from harrier_distill.eval_parallel import _launch_worker_subprocess
+
+        captured: dict[str, Any] = {}
+
+        class FakeProc:
+            def poll(self):
+                return 0
+
+            def terminate(self):
+                return None
+
+            def kill(self):
+                return None
+
+            def wait(self, timeout=None):
+                return 0
+
+        def fake_popen(cmd, env=None, **kwargs):
+            captured["env_cvd"] = env.get("CUDA_VISIBLE_DEVICES") if env else None
+            captured["cmd"] = cmd
+            return FakeProc()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("harrier_distill.eval_parallel.subprocess.Popen", side_effect=fake_popen):
+                _launch_worker_subprocess(
+                    {
+                        "label": "teacher",
+                        "gpu_id": 1,
+                        "cuda_visible_devices": "5",
+                        "worker_kind": "probe",
+                    },
+                    work_dir=Path(tmp),
+                )
+        self.assertEqual(captured["env_cvd"], "5")
+        self.assertIn("harrier_distill.eval_cuda_worker", captured["cmd"])
 
 
 class MiraclSuiteFilterTests(unittest.TestCase):

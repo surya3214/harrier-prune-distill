@@ -429,8 +429,8 @@ def evaluate_retrieval_local(
         device = torch.device(device)
 
     log_eval(f"Loading model: {model_path}", label=label, gpu=gpu)
-    model = load_sentence_transformer(model_path, device=device)
-    log_eval(f"Model loaded on {device}", label=label, gpu=gpu)
+    model = load_sentence_transformer(model_path, device=device, max_seq_length=max_length)
+    log_eval(f"Model loaded on {device} (max_seq_length={max_length})", label=label, gpu=gpu)
 
     summary: dict[str, Any] = {
         "model_path": str(model_path),

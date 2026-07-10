@@ -215,10 +215,19 @@ def evaluate_retrieval(
     resolved_device = device
     if resolved_device is None:
         resolved_device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = load_sentence_transformer(model_path, device=resolved_device)
+    model = load_sentence_transformer(
+        model_path,
+        device=resolved_device,
+        max_seq_length=max_length,
+    )
     try:
         _apply_retrieval_prompts(model, task_names, query_prompt)
-        log_eval(f"Running MTEB retrieval tasks: {', '.join(task_names)}", label=label, gpu=gpu)
+        log_eval(
+            f"Running MTEB retrieval tasks: {', '.join(task_names)} "
+            f"(max_seq_length={max_length})",
+            label=label,
+            gpu=gpu,
+        )
 
         import mteb
 
@@ -558,10 +567,18 @@ def evaluate_sts(
     resolved_device = device
     if resolved_device is None:
         resolved_device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = load_sentence_transformer(model_path, device=resolved_device)
+    model = load_sentence_transformer(
+        model_path,
+        device=resolved_device,
+        max_seq_length=max_length,
+    )
     try:
         _apply_sts_prompts(model, task_names, prompt_name)
-        log_eval(f"Running MTEB STS tasks: {', '.join(task_names)}", label=label, gpu=gpu)
+        log_eval(
+            f"Running MTEB STS tasks: {', '.join(task_names)} (max_seq_length={max_length})",
+            label=label,
+            gpu=gpu,
+        )
 
         import mteb
 

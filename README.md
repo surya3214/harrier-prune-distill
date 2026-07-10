@@ -207,7 +207,17 @@ python scripts/05_compare_sts.py --config configs/distill.yaml \
 python scripts/05_compare_sts.py --config configs/distill.yaml \
   --student /mnt/data/harrier-distill/output/checkpoint_final \
   --suite multilingual --local-sts
+
+# Parallel 3-way compare on separate GPUs (teacher / student / baseline)
+python scripts/05_compare_sts.py --config configs/distill.yaml \
+  --teacher /models/harrier-oss-v1-270m \
+  --student /mnt/data/harrier-distill/output/checkpoint_final \
+  --baseline /models/harrier-12l-pruned \
+  --suite all16 --local-sts \
+  --parallel --gpus 0,1,2
 ```
+
+Eval prints stage progress (`[eval][teacher] Task 3/12: ...`) during model load and per-task scoring. Use `--quiet` to keep stage lines but disable tqdm bars. Under `--parallel`, bars are off on shared stdout by default (stage lines stay prefixed with `[label][gpu=N]`). Pass `--log-dir DIR` to write per-model detail (including tqdm) to `DIR/{teacher,student,baseline}.log`. 3-way parallel needs ~3× VRAM.
 
 Suites: `en`, `ko`, `wave1`, `wave2`, `wave3`, `all16`, `multilingual`, `extended`.
 
@@ -333,13 +343,30 @@ Offline on GPU (uses local retrieval parquet, no internet):
 
 ```bash
 python scripts/04_eval_retrieval.py --config configs/distill.yaml \
-  --model /path/to/retrieval/checkpoint_final --suite en_ko --local-retrieval
+  --model /path/to/retrieval/checkpoint_final --suite all16 --local-retrieval
 
 python scripts/05_compare_retrieval.py --config configs/distill.yaml \
-  --student /path/to/retrieval/checkpoint_final --suite en_ko --local-retrieval
+  --student /path/to/retrieval/checkpoint_final --suite all16 --local-retrieval
+
+# Parallel teacher/student/baseline on GPUs 0,1,2
+python scripts/05_compare_retrieval.py --config configs/distill.yaml \
+  --student /path/to/retrieval/checkpoint_final \
+  --baseline /models/harrier-12l-pruned \
+  --suite all16 --local-retrieval \
+  --parallel --gpus 0,1,2
 ```
 
-Tasks: MSMARCO (EN), MIRACLRetrieval (12 langs), BEIR-PL (PL). Suites: `en`, `ko`, `en_ko`, `wave1`, `wave3`, `all16`, `miracl12`.
+Tasks: MSMARCO (EN), MIRACLRetrieval (12 langs), BEIR-PL (PL). Suites:
+
+| Suite | Tasks | MIRACL langs |
+|-------|-------|--------------|
+| `en` | MSMARCO | — |
+| `en_ko` | MSMARCO + MIRACL | en, ko only |
+| `miracl12` / `wave1` | MIRACL | all configured (12) |
+| `all16` | MSMARCO + MIRACL + BEIR-PL | all configured (12) + PL |
+| `wave3` | BEIR-PL | — |
+
+Note: `it` / `pt` / `vi` have training corpora but **no** retrieval eval benchmarks. Progress logs print per MIRACL language subset during encode/score.
 
 ## Fallback ladder
 
@@ -374,6 +401,8 @@ scripts/
   06_debug_mse_alignment.py
   run_gpu_pipeline.sh
   run_gpu_retrieval_pipeline.sh
+  validate_dataset_splits.py
 src/harrier_distill/
-  config.py data.py losses.py model.py eval.py retrieval.py retrieval_eval.py sts.py debug.py distributed.py text.py
+  config.py data.py losses.py model.py eval.py eval_parallel.py eval_progress.py
+  retrieval.py retrieval_eval.py sts.py debug.py distributed.py text.py mteb_sts.py
 ```

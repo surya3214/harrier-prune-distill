@@ -13,6 +13,7 @@ from scipy.stats import spearmanr
 from sentence_transformers import SentenceTransformer
 
 from harrier_distill.data import ensure_dir, write_corpus_parquet
+from harrier_distill.eval_progress import StageTimer, log_eval, task_progress
 from harrier_distill.model import encode_with_prompt, load_sentence_transformer
 
 
@@ -98,9 +99,20 @@ def encode_texts(
     device: torch.device,
     max_length: int,
     batch_size: int = 64,
+    show_progress: bool = False,
+    progress_desc: str = "encode",
+    quiet: bool | None = None,
 ) -> np.ndarray:
     outputs: list[np.ndarray] = []
-    for start in range(0, len(texts), batch_size):
+    starts = range(0, len(texts), batch_size)
+    n_batches = (len(texts) + batch_size - 1) // batch_size if texts else 0
+    for start in task_progress(
+        starts,
+        desc=progress_desc,
+        total=n_batches,
+        quiet=quiet,
+        disable=not show_progress,
+    ):
         batch = texts[start : start + batch_size]
         emb = encode_with_prompt(
             model,
@@ -123,6 +135,8 @@ def encode_pair_similarities(
     device: torch.device,
     max_length: int,
     batch_size: int = 64,
+    show_progress: bool = False,
+    quiet: bool | None = None,
 ) -> np.ndarray:
     emb1 = encode_texts(
         model,
@@ -131,6 +145,9 @@ def encode_pair_similarities(
         device=device,
         max_length=max_length,
         batch_size=batch_size,
+        show_progress=show_progress,
+        progress_desc="encode-s1",
+        quiet=quiet,
     )
     emb2 = encode_texts(
         model,
@@ -139,6 +156,9 @@ def encode_pair_similarities(
         device=device,
         max_length=max_length,
         batch_size=batch_size,
+        show_progress=show_progress,
+        progress_desc="encode-s2",
+        quiet=quiet,
     )
     return np.sum(emb1 * emb2, axis=1)
 
@@ -152,6 +172,8 @@ def compute_sts_spearman(
     device: torch.device | None = None,
     max_length: int = 512,
     batch_size: int = 64,
+    show_progress: bool = False,
+    quiet: bool | None = None,
 ) -> float:
     device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
     sims = encode_pair_similarities(
@@ -162,6 +184,8 @@ def compute_sts_spearman(
         device=device,
         max_length=max_length,
         batch_size=batch_size,
+        show_progress=show_progress,
+        quiet=quiet,
     )
     return float(spearmanr(sims, pairs.score).correlation)
 
@@ -173,20 +197,38 @@ def evaluate_sts_local(
     prompt_name: str = "sts_query",
     batch_size: int = 64,
     max_length: int = 512,
+    device: torch.device | str | None = None,
+    label: str | None = None,
+    gpu: int | None = None,
+    quiet: bool | None = None,
 ) -> dict[str, Any]:
     """Evaluate STS Spearman scores from local parquet files (offline)."""
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    else:
+        device = torch.device(device)
+
+    log_eval(f"Loading model: {model_path}", label=label, gpu=gpu)
     model = load_sentence_transformer(model_path, device=device)
+    log_eval(f"Model loaded on {device}", label=label, gpu=gpu)
 
     summary: dict[str, Any] = {
         "model_path": str(model_path),
         "backend": "local",
         "tasks": {},
     }
-    for task_name, parquet_path in task_paths.items():
+    task_items = list(task_paths.items())
+    for idx, (task_name, parquet_path) in enumerate(task_items, start=1):
         if not parquet_path.exists():
             raise FileNotFoundError(f"Local STS dataset not found for {task_name}: {parquet_path}")
         pairs = load_sts_parquet(parquet_path)
+        n_pairs = len(pairs.score)
+        log_eval(
+            f"Task {idx}/{len(task_items)}: {task_name} ({n_pairs:,} pairs) — encoding...",
+            label=label,
+            gpu=gpu,
+        )
+        timer = StageTimer()
         score = compute_sts_spearman(
             model,
             pairs,
@@ -194,6 +236,13 @@ def evaluate_sts_local(
             device=device,
             max_length=max_length,
             batch_size=batch_size,
+            show_progress=not (quiet if quiet is not None else False),
+            quiet=quiet,
+        )
+        log_eval(
+            f"Task {idx}/{len(task_items)}: {task_name} — Spearman={score:.4f} ({timer.elapsed_str()})",
+            label=label,
+            gpu=gpu,
         )
         summary["tasks"][task_name] = {
             "main_score": score,
@@ -207,7 +256,7 @@ def evaluate_sts_local(
                 ]
             },
             "source_path": str(parquet_path),
-            "pair_count": len(pairs.score),
+            "pair_count": n_pairs,
             "split": pairs.split,
         }
     return summary

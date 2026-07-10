@@ -4,8 +4,16 @@ import json
 from pathlib import Path
 from typing import Any
 
-import mteb
-
+from harrier_distill.eval_parallel import (
+    _retrieval_eval_worker,
+    _sts_eval_worker,
+    assign_gpus_to_models,
+    resolve_gpu_ids,
+    run_parallel_jobs,
+    serialize_retrieval_paths,
+    serialize_sts_paths,
+)
+from harrier_distill.eval_progress import StageTimer, log_eval
 from harrier_distill.model import load_sentence_transformer
 from harrier_distill.mteb_sts import mteb_eng_v2_sts_task_names, resolve_mteb_sts_task_objects
 from harrier_distill.retrieval_eval import (
@@ -42,6 +50,13 @@ MTEB_LOCALE_TO_MIRACL: dict[str, str] = {
     "ru": "ru",
     "th": "th",
     "zh": "zh",
+}
+
+# Suites that should restrict MIRACL to a small language subset.
+SUITE_MIRACL_FILTER: dict[str, list[str]] = {
+    "en": [],
+    "ko": ["ko"],
+    "en_ko": ["en", "ko"],
 }
 
 STS_SUITES: dict[str, list[str]] = {
@@ -109,6 +124,27 @@ def _miracl_eval_subsets(languages_cfg: dict[str, Any] | list[str] | None) -> li
     return [MTEB_LOCALE_TO_MIRACL.get(lang, lang) for lang in miracl_langs]
 
 
+def resolve_miracl_subsets_for_suite(
+    suite: str,
+    languages_cfg: dict[str, Any] | list[str] | None,
+) -> list[str] | None:
+    """Resolve MIRACL language subsets, applying suite-specific filters.
+
+    - ``en``: no MIRACL langs (task not in suite)
+    - ``ko`` / ``en_ko``: restrict to ko / en+ko
+    - ``all16`` / ``miracl12`` / ``wave1``: full config list
+    """
+    config_subsets = _miracl_eval_subsets(languages_cfg)
+    if suite in SUITE_MIRACL_FILTER:
+        allowed = SUITE_MIRACL_FILTER[suite]
+        if not allowed:
+            return []
+        if config_subsets is None:
+            return list(allowed)
+        return [lang for lang in config_subsets if lang in allowed]
+    return config_subsets
+
+
 def _filter_local_retrieval_paths(
     local_task_paths: dict[str, RetrievalTaskPaths],
     *,
@@ -144,8 +180,14 @@ def evaluate_retrieval(
     use_local_retrieval: bool = False,
     local_task_paths: dict[str, RetrievalTaskPaths] | None = None,
     max_length: int = 512,
+    device: torch.device | str | None = None,
+    label: str | None = None,
+    gpu: int | None = None,
+    quiet: bool | None = None,
 ) -> dict[str, Any]:
     """Run retrieval tasks via MTEB or local parquet and return per-task nDCG@10."""
+    import torch
+
     task_names = tasks or ["MSMARCO", "MIRACLRetrieval"]
     if use_local_retrieval:
         if local_task_paths is None:
@@ -161,15 +203,30 @@ def evaluate_retrieval(
             query_prompt=query_prompt,
             batch_size=batch_size,
             max_length=max_length,
+            device=device,
+            label=label,
+            gpu=gpu,
+            quiet=quiet,
         )
 
-    mteb_tasks = mteb.get_tasks(tasks=task_names)
-
-    model = load_sentence_transformer(model_path)
+    log_eval(f"Loading model (MTEB): {model_path}", label=label, gpu=gpu)
+    resolved_device = device
+    if resolved_device is None:
+        resolved_device = "cuda" if torch.cuda.is_available() else "cpu"
+    model = load_sentence_transformer(model_path, device=resolved_device)
     _apply_retrieval_prompts(model, task_names, query_prompt)
+    log_eval(f"Running MTEB retrieval tasks: {', '.join(task_names)}", label=label, gpu=gpu)
 
+    import mteb
+
+    mteb_tasks = mteb.get_tasks(tasks=task_names)
     evaluation = mteb.MTEB(tasks=mteb_tasks)
-    encode_kwargs = {"batch_size": batch_size, "show_progress_bar": True, "prompt_name": query_prompt}
+    show_bars = not (quiet if quiet is not None else False)
+    encode_kwargs = {
+        "batch_size": batch_size,
+        "show_progress_bar": show_bars,
+        "prompt_name": query_prompt,
+    }
     eval_subsets = miracl_subsets if miracl_subsets is not None else ["en", "ko"]
 
     results = evaluation.run(
@@ -210,6 +267,11 @@ def compare_retrieval(
     use_local_retrieval: bool = False,
     local_task_paths: dict[str, RetrievalTaskPaths] | None = None,
     max_length: int = 512,
+    parallel: bool = False,
+    gpu_ids: list[int] | None = None,
+    max_workers: int | None = None,
+    quiet: bool | None = None,
+    log_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     """Evaluate teacher and student (and optional baseline) on retrieval tasks."""
     task_names = get_retrieval_tasks_for_suite(suite, tasks=tasks)
@@ -223,28 +285,78 @@ def compare_retrieval(
 
     output_root = Path(output_dir) if output_dir else None
     mteb_root = output_root / "mteb_runs" if output_root and not use_local_retrieval else None
+    backend = "local" if use_local_retrieval else "mteb"
 
-    models: list[tuple[str, str | Path]] = [
-        ("teacher", teacher_path),
-        ("student", student_path),
+    models: list[tuple[str, str]] = [
+        ("teacher", str(teacher_path)),
+        ("student", str(student_path)),
     ]
     if baseline_path is not None:
-        models.append(("baseline", baseline_path))
+        models.append(("baseline", str(baseline_path)))
+
+    resolved_gpus = resolve_gpu_ids(parallel=parallel, n_models=len(models), gpus=gpu_ids)
+    use_parallel = bool(resolved_gpus)
+    if parallel and not use_parallel:
+        log_eval("Parallel requested but <2 GPUs/models available; falling back to sequential")
+
+    log_eval(
+        f"Starting comparison: suite={suite}, models={len(models)}, backend={backend}, "
+        f"parallel={use_parallel}"
+        + (f", gpus={resolved_gpus}" if use_parallel else "")
+    )
+
+    log_root = Path(log_dir) if log_dir else None
+    if log_root is not None:
+        log_root.mkdir(parents=True, exist_ok=True)
 
     summaries: dict[str, dict[str, Any]] = {}
-    for label, model_path in models:
-        model_mteb_dir = mteb_root / label if mteb_root else None
-        summaries[label] = evaluate_retrieval(
-            model_path,
-            tasks=task_names,
-            query_prompt=query_prompt,
-            batch_size=batch_size,
-            output_dir=model_mteb_dir,
-            miracl_subsets=miracl_subsets,
-            use_local_retrieval=use_local_retrieval,
-            local_task_paths=local_task_paths,
-            max_length=max_length,
+    if use_parallel:
+        assigned = assign_gpus_to_models(models, resolved_gpus)
+        jobs = []
+        for label, model_path, gpu_id in assigned:
+            model_mteb_dir = mteb_root / label if mteb_root else None
+            jobs.append(
+                {
+                    "label": label,
+                    "model_path": model_path,
+                    "gpu_id": gpu_id,
+                    "tasks": task_names,
+                    "query_prompt": query_prompt,
+                    "batch_size": batch_size,
+                    "output_dir": str(model_mteb_dir) if model_mteb_dir else None,
+                    "miracl_subsets": miracl_subsets,
+                    "use_local_retrieval": use_local_retrieval,
+                    "local_task_paths": serialize_retrieval_paths(local_task_paths),
+                    "max_length": max_length,
+                    "quiet": True if quiet is None else quiet,
+                    "log_path": str(log_root / f"{label}.log") if log_root else None,
+                }
+            )
+            log_eval(f"Queued on gpu={gpu_id} path={model_path}", label=label, gpu=gpu_id)
+        summaries = run_parallel_jobs(
+            jobs,
+            worker=_retrieval_eval_worker,
+            max_workers=max_workers or len(resolved_gpus),
         )
+    else:
+        for idx, (label, model_path) in enumerate(models, start=1):
+            model_mteb_dir = mteb_root / label if mteb_root else None
+            log_eval(f"({idx}/{len(models)}) path={model_path}", label=label)
+            timer = StageTimer()
+            summaries[label] = evaluate_retrieval(
+                model_path,
+                tasks=task_names,
+                query_prompt=query_prompt,
+                batch_size=batch_size,
+                output_dir=model_mteb_dir,
+                miracl_subsets=miracl_subsets,
+                use_local_retrieval=use_local_retrieval,
+                local_task_paths=local_task_paths,
+                max_length=max_length,
+                label=label,
+                quiet=quiet,
+            )
+            log_eval(f"({idx}/{len(models)}) done in {timer.elapsed_str()}", label=label)
 
     comparison_rows: list[dict[str, Any]] = []
     for task_name in task_names:
@@ -267,12 +379,14 @@ def compare_retrieval(
         )
 
     return {
-        "backend": "local" if use_local_retrieval else "mteb",
+        "backend": backend,
         "suite": suite,
         "tasks": task_names,
         "teacher_path": str(teacher_path),
         "student_path": str(student_path),
         "baseline_path": str(baseline_path) if baseline_path else None,
+        "parallel": use_parallel,
+        "gpu_ids": resolved_gpus if use_parallel else None,
         "summaries": summaries,
         "comparison": comparison_rows,
         "macro": macro,
@@ -403,8 +517,14 @@ def evaluate_sts(
     use_local_sts: bool = False,
     local_task_paths: dict[str, Path] | None = None,
     max_length: int = 512,
+    device: torch.device | str | None = None,
+    label: str | None = None,
+    gpu: int | None = None,
+    quiet: bool | None = None,
 ) -> dict[str, Any]:
     """Run STS tasks via MTEB or local parquet and return per-task Spearman scores."""
+    import torch
+
     task_names = tasks or [*MTEB_ENG_V2_STS, "KorSTS"]
     if use_local_sts:
         if local_task_paths is None:
@@ -415,18 +535,29 @@ def evaluate_sts(
             prompt_name=prompt_name,
             batch_size=batch_size,
             max_length=max_length,
+            device=device,
+            label=label,
+            gpu=gpu,
+            quiet=quiet,
         )
 
-    mteb_tasks = resolve_mteb_sts_task_objects(task_names)
-
-    model = load_sentence_transformer(model_path)
+    log_eval(f"Loading model (MTEB): {model_path}", label=label, gpu=gpu)
+    resolved_device = device
+    if resolved_device is None:
+        resolved_device = "cuda" if torch.cuda.is_available() else "cpu"
+    model = load_sentence_transformer(model_path, device=resolved_device)
     _apply_sts_prompts(model, task_names, prompt_name)
+    log_eval(f"Running MTEB STS tasks: {', '.join(task_names)}", label=label, gpu=gpu)
 
+    import mteb
+
+    mteb_tasks = resolve_mteb_sts_task_objects(task_names)
     evaluation = mteb.MTEB(tasks=mteb_tasks)
+    show_bars = not (quiet if quiet is not None else False)
     results = evaluation.run(
         model,
         output_folder=str(output_dir) if output_dir else None,
-        encode_kwargs={"batch_size": batch_size, "show_progress_bar": True},
+        encode_kwargs={"batch_size": batch_size, "show_progress_bar": show_bars},
     )
 
     summary: dict[str, Any] = {"model_path": str(model_path), "backend": "mteb", "tasks": {}}
@@ -481,6 +612,11 @@ def compare_sts(
     use_local_sts: bool = False,
     local_task_paths: dict[str, Path] | None = None,
     max_length: int = 512,
+    parallel: bool = False,
+    gpu_ids: list[int] | None = None,
+    max_workers: int | None = None,
+    quiet: bool | None = None,
+    log_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     """Evaluate teacher and student (and optional baseline) on the same STS suite."""
     task_names = get_tasks_for_suite(suite, tasks=tasks)
@@ -494,27 +630,76 @@ def compare_sts(
 
     output_root = Path(output_dir) if output_dir else None
     mteb_root = output_root / "mteb_runs" if output_root else None
+    backend = "local" if use_local_sts else "mteb"
 
-    models: list[tuple[str, str | Path]] = [
-        ("teacher", teacher_path),
-        ("student", student_path),
+    models: list[tuple[str, str]] = [
+        ("teacher", str(teacher_path)),
+        ("student", str(student_path)),
     ]
     if baseline_path is not None:
-        models.append(("baseline", baseline_path))
+        models.append(("baseline", str(baseline_path)))
+
+    resolved_gpus = resolve_gpu_ids(parallel=parallel, n_models=len(models), gpus=gpu_ids)
+    use_parallel = bool(resolved_gpus)
+    if parallel and not use_parallel:
+        log_eval("Parallel requested but <2 GPUs/models available; falling back to sequential")
+
+    log_eval(
+        f"Starting comparison: suite={suite}, models={len(models)}, backend={backend}, "
+        f"parallel={use_parallel}"
+        + (f", gpus={resolved_gpus}" if use_parallel else "")
+    )
+
+    log_root = Path(log_dir) if log_dir else None
+    if log_root is not None:
+        log_root.mkdir(parents=True, exist_ok=True)
 
     summaries: dict[str, dict[str, Any]] = {}
-    for label, model_path in models:
-        model_mteb_dir = mteb_root / label if mteb_root and not use_local_sts else None
-        summaries[label] = evaluate_sts(
-            model_path,
-            tasks=task_names,
-            prompt_name=prompt_name,
-            batch_size=batch_size,
-            output_dir=model_mteb_dir,
-            use_local_sts=use_local_sts,
-            local_task_paths=local_task_paths,
-            max_length=max_length,
+    if use_parallel:
+        assigned = assign_gpus_to_models(models, resolved_gpus)
+        jobs = []
+        for label, model_path, gpu_id in assigned:
+            model_mteb_dir = mteb_root / label if mteb_root and not use_local_sts else None
+            jobs.append(
+                {
+                    "label": label,
+                    "model_path": model_path,
+                    "gpu_id": gpu_id,
+                    "tasks": task_names,
+                    "prompt_name": prompt_name,
+                    "batch_size": batch_size,
+                    "output_dir": str(model_mteb_dir) if model_mteb_dir else None,
+                    "use_local_sts": use_local_sts,
+                    "local_task_paths": serialize_sts_paths(local_task_paths),
+                    "max_length": max_length,
+                    "quiet": True if quiet is None else quiet,
+                    "log_path": str(log_root / f"{label}.log") if log_root else None,
+                }
+            )
+            log_eval(f"Queued on gpu={gpu_id} path={model_path}", label=label, gpu=gpu_id)
+        summaries = run_parallel_jobs(
+            jobs,
+            worker=_sts_eval_worker,
+            max_workers=max_workers or len(resolved_gpus),
         )
+    else:
+        for idx, (label, model_path) in enumerate(models, start=1):
+            model_mteb_dir = mteb_root / label if mteb_root and not use_local_sts else None
+            log_eval(f"({idx}/{len(models)}) path={model_path}", label=label)
+            timer = StageTimer()
+            summaries[label] = evaluate_sts(
+                model_path,
+                tasks=task_names,
+                prompt_name=prompt_name,
+                batch_size=batch_size,
+                output_dir=model_mteb_dir,
+                use_local_sts=use_local_sts,
+                local_task_paths=local_task_paths,
+                max_length=max_length,
+                label=label,
+                quiet=quiet,
+            )
+            log_eval(f"({idx}/{len(models)}) done in {timer.elapsed_str()}", label=label)
 
     comparison_rows: list[dict[str, Any]] = []
     for task_name in task_names:
@@ -537,12 +722,14 @@ def compare_sts(
         )
 
     return {
-        "backend": "local" if use_local_sts else "mteb",
+        "backend": backend,
         "suite": suite,
         "tasks": task_names,
         "teacher_path": str(teacher_path),
         "student_path": str(student_path),
         "baseline_path": str(baseline_path) if baseline_path else None,
+        "parallel": use_parallel,
+        "gpu_ids": resolved_gpus if use_parallel else None,
         "summaries": summaries,
         "comparison": comparison_rows,
         "macro": macro,

@@ -65,11 +65,26 @@ def assign_gpus_to_models(
     return assigned
 
 
-def _sts_eval_worker(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+def _prepare_worker_env(job: dict[str, Any]) -> None:
+    """Configure CUDA remapping, quiet mode, and optional per-model log file."""
     gpu_id = int(job["gpu_id"])
     os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
-    if job.get("quiet"):
-        os.environ["EVAL_QUIET"] = "1"
+    # Parallel workers never share tqdm on stdout; stage lines still print.
+    os.environ["EVAL_QUIET"] = "1"
+    log_path = job.get("log_path")
+    if log_path:
+        path = Path(log_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Truncate so each run starts a fresh per-model log.
+        path.write_text("", encoding="utf-8")
+        os.environ["EVAL_LOG_FILE"] = str(path)
+    else:
+        os.environ.pop("EVAL_LOG_FILE", None)
+
+
+def _sts_eval_worker(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    _prepare_worker_env(job)
+    gpu_id = int(job["gpu_id"])
 
     from harrier_distill.eval import evaluate_sts
     from harrier_distill.eval_progress import log_eval
@@ -96,10 +111,8 @@ def _sts_eval_worker(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
 
 
 def _retrieval_eval_worker(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    _prepare_worker_env(job)
     gpu_id = int(job["gpu_id"])
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
-    if job.get("quiet"):
-        os.environ["EVAL_QUIET"] = "1"
 
     from harrier_distill.eval import evaluate_retrieval
     from harrier_distill.eval_progress import log_eval

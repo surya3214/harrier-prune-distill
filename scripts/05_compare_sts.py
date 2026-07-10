@@ -99,9 +99,6 @@ def main() -> None:
     eval_dir = output_root / "eval"
     teacher_path = resolve_teacher_path(args, cfg, paths)
 
-    if args.log_dir:
-        Path(args.log_dir).mkdir(parents=True, exist_ok=True)
-
     comparison = compare_sts(
         teacher_path=teacher_path,
         student_path=args.student,
@@ -118,6 +115,7 @@ def main() -> None:
         gpu_ids=parse_gpu_ids(args.gpus),
         max_workers=args.max_workers,
         quiet=args.quiet or None,
+        log_dir=args.log_dir,
     )
 
     print_compare_summary(comparison)

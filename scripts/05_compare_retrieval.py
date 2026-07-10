@@ -98,9 +98,6 @@ def main() -> None:
 
     teacher_path = args.teacher or eval_cfg.get("compare_teacher", "microsoft/harrier-oss-v1-270m")
 
-    if args.log_dir:
-        Path(args.log_dir).mkdir(parents=True, exist_ok=True)
-
     miracl_subsets = resolve_miracl_subsets_for_suite(
         args.suite,
         retrieval_cfg.get("languages"),
@@ -123,6 +120,7 @@ def main() -> None:
         gpu_ids=parse_gpu_ids(args.gpus),
         max_workers=args.max_workers,
         quiet=args.quiet or None,
+        log_dir=args.log_dir,
     )
 
     print_retrieval_compare_summary(comparison)

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import io
+import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -31,16 +33,39 @@ class EvalProgressTests(unittest.TestCase):
 
     def test_log_eval_format(self) -> None:
         buf = io.StringIO()
-        log_eval("hello", label="teacher", gpu=0, file=buf)
+        with patch.dict("os.environ", {}, clear=False):
+            os.environ.pop("EVAL_LOG_FILE", None)
+            log_eval("hello", label="teacher", gpu=0, file=buf)
         line = buf.getvalue()
         self.assertIn("[eval]", line)
         self.assertIn("[teacher]", line)
         self.assertIn("[gpu=0]", line)
         self.assertIn("hello", line)
 
+    def test_log_eval_mirrors_to_log_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "teacher.log"
+            buf = io.StringIO()
+            with patch.dict("os.environ", {"EVAL_LOG_FILE": str(log_path)}):
+                log_eval("mirrored", label="teacher", gpu=1, file=buf)
+            self.assertIn("mirrored", buf.getvalue())
+            self.assertIn("mirrored", log_path.read_text(encoding="utf-8"))
+
     def test_task_progress_disabled_when_quiet(self) -> None:
-        items = list(task_progress([1, 2, 3], desc="x", quiet=True))
+        with patch.dict("os.environ", {}, clear=False):
+            os.environ.pop("EVAL_LOG_FILE", None)
+            items = list(task_progress([1, 2, 3], desc="x", quiet=True))
         self.assertEqual(items, [1, 2, 3])
+
+    def test_task_progress_quiet_writes_tqdm_to_log_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "student.log"
+            log_path.write_text("", encoding="utf-8")
+            with patch.dict("os.environ", {"EVAL_LOG_FILE": str(log_path), "EVAL_QUIET": "1"}):
+                items = list(task_progress([1, 2, 3], desc="encode", quiet=True))
+            self.assertEqual(items, [1, 2, 3])
+            # tqdm should have written progress into the per-model log
+            self.assertIn("encode", log_path.read_text(encoding="utf-8"))
 
 
 class EvalParallelTests(unittest.TestCase):

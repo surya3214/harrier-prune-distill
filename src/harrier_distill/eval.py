@@ -271,6 +271,7 @@ def compare_retrieval(
     gpu_ids: list[int] | None = None,
     max_workers: int | None = None,
     quiet: bool | None = None,
+    log_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     """Evaluate teacher and student (and optional baseline) on retrieval tasks."""
     task_names = get_retrieval_tasks_for_suite(suite, tasks=tasks)
@@ -304,6 +305,10 @@ def compare_retrieval(
         + (f", gpus={resolved_gpus}" if use_parallel else "")
     )
 
+    log_root = Path(log_dir) if log_dir else None
+    if log_root is not None:
+        log_root.mkdir(parents=True, exist_ok=True)
+
     summaries: dict[str, dict[str, Any]] = {}
     if use_parallel:
         assigned = assign_gpus_to_models(models, resolved_gpus)
@@ -324,6 +329,7 @@ def compare_retrieval(
                     "local_task_paths": serialize_retrieval_paths(local_task_paths),
                     "max_length": max_length,
                     "quiet": True if quiet is None else quiet,
+                    "log_path": str(log_root / f"{label}.log") if log_root else None,
                 }
             )
             log_eval(f"Queued on gpu={gpu_id} path={model_path}", label=label, gpu=gpu_id)
@@ -610,6 +616,7 @@ def compare_sts(
     gpu_ids: list[int] | None = None,
     max_workers: int | None = None,
     quiet: bool | None = None,
+    log_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     """Evaluate teacher and student (and optional baseline) on the same STS suite."""
     task_names = get_tasks_for_suite(suite, tasks=tasks)
@@ -643,6 +650,10 @@ def compare_sts(
         + (f", gpus={resolved_gpus}" if use_parallel else "")
     )
 
+    log_root = Path(log_dir) if log_dir else None
+    if log_root is not None:
+        log_root.mkdir(parents=True, exist_ok=True)
+
     summaries: dict[str, dict[str, Any]] = {}
     if use_parallel:
         assigned = assign_gpus_to_models(models, resolved_gpus)
@@ -662,6 +673,7 @@ def compare_sts(
                     "local_task_paths": serialize_sts_paths(local_task_paths),
                     "max_length": max_length,
                     "quiet": True if quiet is None else quiet,
+                    "log_path": str(log_root / f"{label}.log") if log_root else None,
                 }
             )
             log_eval(f"Queued on gpu={gpu_id} path={model_path}", label=label, gpu=gpu_id)

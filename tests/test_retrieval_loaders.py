@@ -8,9 +8,11 @@ from pathlib import Path
 from unittest.mock import patch
 
 from harrier_distill.retrieval import (
+    _group_triplets_by_query,
     collect_retrieval_rows,
     expand_triplet_rows,
     iter_mrtydi_hard_negative_triplets,
+    iter_msmarco_triplets,
     iter_unicamp_mmarco_train_id_triplets,
 )
 
@@ -126,6 +128,73 @@ class MrTyDiLoaderTests(unittest.TestCase):
         self.assertEqual(len(negatives), 2)
 
 
+class MultiNegColumnLoaderTests(unittest.TestCase):
+    def test_reads_negative_1_through_7(self) -> None:
+        rows = [
+            {
+                "query": "capital of france query text",
+                "positive": "Paris is the capital of France passage.",
+                "negative_1": "Lyon is in France passage text.",
+                "negative_2": "Marseille is a port passage text.",
+                "negative_3": "Nice is on the coast passage text.",
+                "negative_4": "Bordeaux is wine country passage.",
+                "negative_5": "Toulouse is in the south passage.",
+                "negative_6": "Nantes is in the west passage.",
+                "negative_7": "Lille is in the north passage.",
+            }
+        ]
+        source_cfg = {
+            "hf_path": "hotchpotch/mmarco-hard-negatives-reranker-filtered",
+            "config": "french-hard-negatives-7",
+            "split": "train",
+            "streaming": True,
+            "query_column": "query",
+            "positive_column": "positive",
+            "negative_columns": [f"negative_{i}" for i in range(1, 8)],
+            "negatives_per_triplet": 7,
+        }
+        with patch("harrier_distill.retrieval._load_hf_dataset", return_value=rows):
+            triplets = list(iter_msmarco_triplets(source_cfg))
+        self.assertEqual(len(triplets), 1)
+        _, positive, negatives = triplets[0]
+        self.assertIn("Paris", positive)
+        self.assertEqual(len(negatives), 7)
+
+
+class GroupNegativesByQueryTests(unittest.TestCase):
+    def test_packs_until_negatives_per_and_streams_early(self) -> None:
+        rows = [
+            ("q1 text enough chars", "pos1 text enough", ["neg1a text enough"]),
+            ("q1 text enough chars", "pos1 text enough", ["neg1b text enough"]),
+            ("q1 text enough chars", "pos1 text enough", ["neg1c text enough"]),
+            ("q2 text enough chars", "pos2 text enough", ["neg2a text enough"]),
+        ]
+        out = list(_group_triplets_by_query(iter(rows), negatives_per=3))
+        self.assertEqual(len(out), 2)
+        q1 = next(item for item in out if item[0].startswith("q1"))
+        self.assertEqual(len(q1[2]), 3)
+        q2 = next(item for item in out if item[0].startswith("q2"))
+        self.assertEqual(len(q2[2]), 1)
+
+    def test_msmarco_group_flag_packs_rows(self) -> None:
+        rows = [
+            {"query": "same query text here", "positive": "shared positive passage", "negative": "neg one passage"},
+            {"query": "same query text here", "positive": "shared positive passage", "negative": "neg two passage"},
+            {"query": "same query text here", "positive": "shared positive passage", "negative": "neg three passage"},
+        ]
+        source_cfg = {
+            "hf_path": "chieunq/mMARCO_vietnamese",
+            "split": "train",
+            "streaming": True,
+            "negatives_per_triplet": 3,
+            "group_negatives_by_query": True,
+        }
+        with patch("harrier_distill.retrieval._load_hf_dataset", return_value=rows):
+            triplets = list(iter_msmarco_triplets(source_cfg))
+        self.assertEqual(len(triplets), 1)
+        self.assertEqual(len(triplets[0][2]), 3)
+
+
 class CollectRetrievalRowsTests(unittest.TestCase):
     def test_allows_same_query_with_different_docs(self) -> None:
         """Triplet-content dedupe should keep distinct (q, pos, neg) rows."""
@@ -155,6 +224,16 @@ class CollectRetrievalRowsTests(unittest.TestCase):
             )
         triplet_ids = {row["triplet_id"] for row in rows if "triplet_id" in row}
         self.assertEqual(len(triplet_ids), 2)
+
+    def test_config_targets_are_350k(self) -> None:
+        from harrier_distill.config import load_retrieval_datasets_config
+        from harrier_distill.retrieval import get_retrieval_lang_configs
+
+        cfg = load_retrieval_datasets_config("configs/retrieval_datasets.yaml")
+        langs, lang_cfgs = get_retrieval_lang_configs(cfg)
+        self.assertEqual(len(langs), 16)
+        for lang in langs:
+            self.assertEqual(lang_cfgs[lang]["target_triplets"], 350_000)
 
 
 if __name__ == "__main__":

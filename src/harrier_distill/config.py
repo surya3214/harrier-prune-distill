@@ -441,13 +441,14 @@ def should_skip_download(
     force: bool,
     skip_existing: bool,
     expected_negatives_per_query: int | None = None,
+    expected_negatives_per_triplet: int | None = None,
 ) -> bool:
     """Return True when an existing download can be reused.
 
     STS manifests use ``target_samples`` + ``rows``. Retrieval manifests use
     ``triplet_count`` (actual triplets written) plus ``target_triplets`` (configured
-    target), and optionally ``negatives_per_query`` so raising MIRACL negatives
-    invalidates a stale corpus.
+    target). Changing the configured target, MIRACL ``negatives_per_query``, or
+    bulk ``negatives_per_triplet`` invalidates a stale corpus.
 
     Legacy retrieval manifests that only store ``target_triplets`` without
     ``triplet_count`` are treated as stale and are not skipped.
@@ -463,12 +464,19 @@ def should_skip_download(
     if "target_triplets" in manifest or "triplet_count" in manifest:
         if "triplet_count" not in manifest:
             return False
+        # Require the configured target to match so lowering 1M → 350k rebuilds.
+        if int(manifest.get("target_triplets", -1)) != int(target_rows):
+            return False
         actual_triplets = int(manifest["triplet_count"])
         if actual_triplets < int(target_rows):
             return False
         if expected_negatives_per_query is not None:
             stored = manifest.get("negatives_per_query")
             if stored is None or int(stored) != int(expected_negatives_per_query):
+                return False
+        if expected_negatives_per_triplet is not None:
+            stored_nt = manifest.get("negatives_per_triplet")
+            if stored_nt is None or int(stored_nt) != int(expected_negatives_per_triplet):
                 return False
         return True
 

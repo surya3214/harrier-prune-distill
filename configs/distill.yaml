@@ -51,7 +51,7 @@ training:
     cosine: 0.2
     pairwise_mse: 0.0
     score_kl: 0.0
-  pairwise_triplets_per_batch: 96
+  pairwise_triplets_per_batch: 48
 
 phases:
   retrieval:

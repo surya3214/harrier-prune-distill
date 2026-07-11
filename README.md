@@ -17,7 +17,7 @@ Local (internet)                GPU (offline, 4x H100)
 - **Languages:** `en`, `ko`, `ar`, `zh`, `fr`, `de`, `hi`, `id`, `it`, `ja`, `pt`, `ru`, `es`, `vi`, `th`, `pl` (training order in `languages.yaml`)
 - **Prompt:** `sts_query` (STS) / `web_search_query` (retrieval queries)
 - **Loss:** MSE + cosine (STS); MSE + cosine + score_kl (retrieval)
-- **Production data:** 1M texts/lang × 16 ≈ 16M STS rows; ~1M retrieval triplets/lang (ko/th much smaller)
+- **Production data:** 1M texts/lang × 16 ≈ 16M STS rows; ~350k retrieval triplets/lang × 7 hard negatives (ko/th much smaller)
 - **Seq length:** 512 tokens
 
 ## Training losses
@@ -31,7 +31,7 @@ training:
     cosine: 0.2
     pairwise_mse: 0.0
     score_kl: 0.0
-  pairwise_triplets_per_batch: 96
+  pairwise_triplets_per_batch: 48
 
 phases:
   retrieval:
@@ -284,17 +284,17 @@ Local (internet)                         GPU (offline)
 
 ### Datasets (16 languages)
 
-Target **~1M triplets/lang** where public sources allow. MIRACL hard-negatives (`negatives_per_query: 8`) is a small high-quality supplement; bulk volume comes from mMARCO.
+Target **~350k multi-neg triplets/lang** (7 hard negatives → 8-way `score_kl`) where public sources allow. Prefer listwise hard negatives over 1M×1-neg volume for teacher→student retrieval retention.
 
 | Group | Langs | Retrieval train source |
 |-------|-------|------------------------|
-| MIRACL + mMARCO | ar, de, en, es, fr, id, ja, zh | MIRACL dev HN + `hotchpotch/...` `{lang}-triplet-10` |
-| MIRACL + unicamp | hi, ru | MIRACL dev HN + `unicamp-dl/mmarco` train ID triples |
-| mMARCO | it | `hotchpotch/...` `italian-triplet-10` |
-| mMARCO | pt | `unicamp-dl/mmarco` train ID triples (google translation) |
-| mMARCO | vi | `chieunq/mMARCO_vietnamese` |
-| MAUPQA | pl | `ipipan/maupqa` all train CSV subsets |
-| MIRACL + Mr. TyDi | ko, th | MIRACL + `crystina-z/mrtydi-mContriever-mmarco-HN` only (≪1M; no public mMARCO) |
+| MIRACL + hard-neg-7 | ar, de, en, es, fr, id, ja, zh | MIRACL HN + `hotchpotch/...` `{lang}-hard-negatives-7` |
+| MIRACL + unicamp packed | hi, ru | MIRACL HN + unicamp train IDs grouped to 7 negs/query |
+| hard-neg-7 | it | `hotchpotch/...` `italian-hard-negatives-7` |
+| unicamp packed | pt | unicamp train IDs grouped to 7 negs/query |
+| mMARCO packed | vi | `chieunq/mMARCO_vietnamese` grouped to 7 negs/query |
+| MAUPQA | pl | `ipipan/maupqa` all train CSV subsets (`negatives_per_triplet: 7`) |
+| MIRACL + Mr. TyDi | ko, th | MIRACL + `crystina-z/mrtydi-mContriever-mmarco-HN` only (≪350k; no public mMARCO) |
 
 Config: [`configs/retrieval_datasets.yaml`](configs/retrieval_datasets.yaml).
 
@@ -312,9 +312,11 @@ python scripts/01_download_retrieval_local.py --config configs/distill.yaml --la
 
 Outputs `{local_data_root}/retrieval/{lang}/corpus.parquet` with `role` and `triplet_id` columns. `--skip-existing` / `--force` supported.
 
-`--force` for all langs pulls ~**30–45 GB** into the local HF cache (unicamp `hi`/`ru`/`pt` collections dominate). The built corpora you rsync to the GPU are ~**15–30 GB** under `retrieval/` (14 langs × ~1M triplets; `ko`/`th` tiny).
+Streaming sources (`*-hard-negatives-7`, Vietnamese mMARCO) stop once the lang target is reached. Unicamp train-ID langs (`hi`/`ru`/`pt`) still download the shared ID triples file + translated collection TSVs (largest local inbound cost). Built corpora under `retrieval/` are what you rsync to the GPU (~1 pos + 7 negs → ~8 docs/triplet × 350k ≈ fewer GB than the old 1M×1-neg layout for hotchpotch langs).
 
-**Regen after raising MIRACL `negatives_per_query` (or switching to `score_kl`):** old corpora are stale — rebuild, rsync, re-embed, retrain:
+**Train knobs for 80GB:** `training.pairwise_triplets_per_batch: 48` with 7-neg triplets keeps peak encode size around ~45–60GB (pointwise 256 + 48×8 docs).
+
+**Regen after raising MIRACL `negatives_per_query` (or switching to `score_kl` / multi-neg corpora):** old corpora are stale — rebuild, rsync, re-embed, retrain:
 
 ```bash
 # Local (internet)

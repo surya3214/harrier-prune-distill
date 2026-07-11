@@ -1,6 +1,7 @@
 # Retrieval distillation corpora for phase 2 (16 languages).
 # Download with scripts/01_download_retrieval_local.py on local infra (internet).
-# Target: ~1M triplets/lang where public sources allow (ko/th are MIRACL+MrTyDi only).
+# Target: ~350k multi-neg triplets/lang (7 hard negatives) for strong score_kl.
+# ko/th have no public mMARCO; expect <<350k (MIRACL + Mr. TyDi HN only).
 
 languages:
   - en
@@ -37,23 +38,32 @@ miracl_defaults: &miracl_defaults
   positives_per_query: 1
   negatives_per_query: 8
 
-# Large mMARCO mined triplets (~3M/lang); take up to lang target.
-mmarco_triplet10_defaults: &mmarco_triplet10_defaults
+# Reranker-filtered hard negatives with 7 explicit negative columns (~300k/lang).
+mmarco_hard_negatives_7_defaults: &mmarco_hard_negatives_7_defaults
   hf_path: hotchpotch/mmarco-hard-negatives-reranker-filtered
   split: train
   streaming: true
   query_column: query
   positive_column: positive
-  negative_column: negative
-  negatives_per_triplet: 1
+  negative_columns:
+    - negative_1
+    - negative_2
+    - negative_3
+    - negative_4
+    - negative_5
+    - negative_6
+    - negative_7
+  negatives_per_triplet: 7
 
-# unicamp train ID triples + translated query/collection texts (hi/ru/pt).
+# unicamp train ID triples packed to 7 negs per query (hi/ru/pt).
 unicamp_train_ids_defaults: &unicamp_train_ids_defaults
   loader: unicamp_mmarco_train_ids
   hf_path: unicamp-dl/mmarco
   translation: google
-  negatives_per_triplet: 1
-  max_id_triples: 2000000
+  negatives_per_triplet: 7
+  group_negatives_by_query: true
+  # Read enough 1-neg ID rows to pack ~350k queries × 7 negs.
+  max_id_triples: 3000000
 
 mmarco_vi_defaults: &mmarco_vi_defaults
   hf_path: chieunq/mMARCO_vietnamese
@@ -62,7 +72,8 @@ mmarco_vi_defaults: &mmarco_vi_defaults
   query_column: query
   positive_column: positive
   negative_column: negative
-  negatives_per_triplet: 1
+  negatives_per_triplet: 7
+  group_negatives_by_query: true
 
 mrtydi_hn_defaults: &mrtydi_hn_defaults
   loader: mrtydi_hard_negatives
@@ -72,79 +83,73 @@ mrtydi_hn_defaults: &mrtydi_hn_defaults
   query_column: query
   positives_column: positive_passages
   negatives_column: negative_passages
-  negatives_per_triplet: 8
+  negatives_per_triplet: 7
 
 en:
-  target_triplets: 1000000
+  target_triplets: 350000
   sources:
     - name: miracl_hard_negatives_en
       <<: *miracl_defaults
-      target_triplets: 1000
       qrels_config: en
       queries_config: queries-en
       corpus_config: corpus-en
-    - name: mmarco_triplets
-      <<: *mmarco_triplet10_defaults
-      config: english-triplet-10
+    - name: mmarco_hard_negatives
+      <<: *mmarco_hard_negatives_7_defaults
+      config: english-hard-negatives-7
 
 ar:
-  target_triplets: 1000000
+  target_triplets: 350000
   sources:
     - name: miracl_hard_negatives
       <<: *miracl_defaults
-      target_triplets: 1000
       qrels_config: ar
       queries_config: queries-ar
       corpus_config: corpus-ar
-    - name: mmarco_triplets
-      <<: *mmarco_triplet10_defaults
-      config: arabic-triplet-10
+    - name: mmarco_hard_negatives
+      <<: *mmarco_hard_negatives_7_defaults
+      config: arabic-hard-negatives-7
 
 de:
-  target_triplets: 1000000
+  target_triplets: 350000
   sources:
     - name: miracl_hard_negatives
       <<: *miracl_defaults
-      target_triplets: 1000
       qrels_config: de
       queries_config: queries-de
       corpus_config: corpus-de
-    - name: mmarco_triplets
-      <<: *mmarco_triplet10_defaults
-      config: german-triplet-10
+    - name: mmarco_hard_negatives
+      <<: *mmarco_hard_negatives_7_defaults
+      config: german-hard-negatives-7
 
 es:
-  target_triplets: 1000000
+  target_triplets: 350000
   sources:
     - name: miracl_hard_negatives
       <<: *miracl_defaults
-      target_triplets: 1000
       qrels_config: es
       queries_config: queries-es
       corpus_config: corpus-es
-    - name: mmarco_triplets
-      <<: *mmarco_triplet10_defaults
-      config: spanish-triplet-10
+    - name: mmarco_hard_negatives
+      <<: *mmarco_hard_negatives_7_defaults
+      config: spanish-hard-negatives-7
 
 fr:
-  target_triplets: 1000000
+  target_triplets: 350000
   sources:
     - name: miracl_hard_negatives
       <<: *miracl_defaults
-      target_triplets: 1000
       qrels_config: fr
       queries_config: queries-fr
       corpus_config: corpus-fr
-    - name: mmarco_triplets
-      <<: *mmarco_triplet10_defaults
-      config: french-triplet-10
+    - name: mmarco_hard_negatives
+      <<: *mmarco_hard_negatives_7_defaults
+      config: french-hard-negatives-7
 
 hi:
-  target_triplets: 1000000
+  target_triplets: 350000
   sources:
     - name: miracl_hard_negatives
       <<: *miracl_defaults
-      target_triplets: 1000
       qrels_config: hi
       queries_config: queries-hi
       corpus_config: corpus-hi
@@ -153,38 +158,35 @@ hi:
       config: hindi
 
 id:
-  target_triplets: 1000000
+  target_triplets: 350000
   sources:
     - name: miracl_hard_negatives
       <<: *miracl_defaults
-      target_triplets: 1000
       qrels_config: id
       queries_config: queries-id
       corpus_config: corpus-id
-    - name: mmarco_triplets
-      <<: *mmarco_triplet10_defaults
-      config: indonesian-triplet-10
+    - name: mmarco_hard_negatives
+      <<: *mmarco_hard_negatives_7_defaults
+      config: indonesian-hard-negatives-7
 
 ja:
-  target_triplets: 1000000
+  target_triplets: 350000
   sources:
     - name: miracl_hard_negatives
       <<: *miracl_defaults
-      target_triplets: 1000
       qrels_config: ja
       queries_config: queries-ja
       corpus_config: corpus-ja
-    - name: mmarco_triplets
-      <<: *mmarco_triplet10_defaults
-      config: japanese-triplet-10
+    - name: mmarco_hard_negatives
+      <<: *mmarco_hard_negatives_7_defaults
+      config: japanese-hard-negatives-7
 
 ko:
-  # No public mMARCO for Korean; expect <<1M (MIRACL dev + Mr. TyDi HN).
-  target_triplets: 1000000
+  # No public mMARCO for Korean; expect <<350k (MIRACL + Mr. TyDi HN).
+  target_triplets: 350000
   sources:
     - name: miracl_hard_negatives
       <<: *miracl_defaults
-      target_triplets: 1000
       qrels_config: ko
       queries_config: queries-ko
       corpus_config: corpus-ko
@@ -193,11 +195,10 @@ ko:
       config: korean
 
 ru:
-  target_triplets: 1000000
+  target_triplets: 350000
   sources:
     - name: miracl_hard_negatives
       <<: *miracl_defaults
-      target_triplets: 1000
       qrels_config: ru
       queries_config: queries-ru
       corpus_config: corpus-ru
@@ -206,12 +207,11 @@ ru:
       config: russian
 
 th:
-  # No public mMARCO for Thai; expect <<1M (MIRACL dev + Mr. TyDi HN).
-  target_triplets: 1000000
+  # No public mMARCO for Thai; expect <<350k (MIRACL + Mr. TyDi HN).
+  target_triplets: 350000
   sources:
     - name: miracl_hard_negatives
       <<: *miracl_defaults
-      target_triplets: 1000
       qrels_config: th
       queries_config: queries-th
       corpus_config: corpus-th
@@ -220,40 +220,39 @@ th:
       config: thai
 
 zh:
-  target_triplets: 1000000
+  target_triplets: 350000
   sources:
     - name: miracl_hard_negatives
       <<: *miracl_defaults
-      target_triplets: 1000
       qrels_config: zh
       queries_config: queries-zh
       corpus_config: corpus-zh
-    - name: mmarco_triplets
-      <<: *mmarco_triplet10_defaults
-      config: chinese-triplet-10
+    - name: mmarco_hard_negatives
+      <<: *mmarco_hard_negatives_7_defaults
+      config: chinese-hard-negatives-7
 
 it:
-  target_triplets: 1000000
+  target_triplets: 350000
   sources:
-    - name: mmarco_triplets
-      <<: *mmarco_triplet10_defaults
-      config: italian-triplet-10
+    - name: mmarco_hard_negatives
+      <<: *mmarco_hard_negatives_7_defaults
+      config: italian-hard-negatives-7
 
 pt:
-  target_triplets: 1000000
+  target_triplets: 350000
   sources:
     - name: mmarco_train_ids
       <<: *unicamp_train_ids_defaults
       config: portuguese
 
 vi:
-  target_triplets: 1000000
+  target_triplets: 350000
   sources:
     - name: mmarco_triplets
       <<: *mmarco_vi_defaults
 
 pl:
-  target_triplets: 1000000
+  target_triplets: 350000
   sources:
     - name: maupqa
       loader: maupqa_csv
@@ -277,7 +276,7 @@ pl:
       streaming: true
       query_column: question
       positive_relevant: true
-      negatives_per_triplet: 3
+      negatives_per_triplet: 7
 
 pilot_sources:
   en:

@@ -251,6 +251,33 @@ class SkipDownloadTests(unittest.TestCase):
                 )
             )
 
+    def test_retrieval_skip_invalidates_on_target_change(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            corpus = root / "corpus.parquet"
+            manifest = root / "manifest.json"
+            corpus.write_text("placeholder", encoding="utf-8")
+            write_download_manifest(
+                manifest,
+                {
+                    "rows": 3_000_000,
+                    "target_triplets": 1_000_000,
+                    "triplet_count": 1_000_000,
+                    "negatives_per_triplet": 1,
+                },
+            )
+            # Lowering target must rebuild (stale 1-neg / 1M corpus).
+            self.assertFalse(
+                should_skip_download(
+                    output_path=corpus,
+                    manifest_path=manifest,
+                    target_rows=350_000,
+                    force=False,
+                    skip_existing=True,
+                    expected_negatives_per_triplet=7,
+                )
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

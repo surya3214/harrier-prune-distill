@@ -83,7 +83,9 @@ def main() -> None:
     languages = [lang for lang in requested if lang in languages]
 
     totals: dict[str, int] = {}
+    triplet_totals: dict[str, int] = {}
     skipped: list[str] = []
+    under_target: list[str] = []
 
     for lang in languages:
         if lang not in lang_cfgs:
@@ -103,11 +105,15 @@ def main() -> None:
         ):
             manifest = json.load(open(manifest_path, encoding="utf-8"))
             totals[lang] = int(manifest.get("rows", 0))
+            triplet_totals[lang] = int(manifest.get("triplet_count", 0))
             skipped.append(lang)
-            print(f"[skip] {lang}: {totals[lang]:,} rows already at {output_path}")
+            print(
+                f"[skip] {lang}: {triplet_totals[lang]:,} triplets "
+                f"({totals[lang]:,} rows) already at {output_path}"
+            )
             continue
 
-        totals[lang] = build_retrieval_corpus(
+        total_rows, triplet_count = build_retrieval_corpus(
             lang=lang,
             lang_cfg=lang_cfgs[lang],
             dedupe_cfg=dedupe_cfg,
@@ -115,9 +121,12 @@ def main() -> None:
             output_path=output_path,
             shard_size=shard_size,
         )
+        totals[lang] = total_rows
+        triplet_totals[lang] = triplet_count
         manifest_entry = {
             "lang": lang,
-            "rows": totals[lang],
+            "rows": total_rows,
+            "triplet_count": triplet_count,
             "target_triplets": target_triplets,
             "path": str(output_path),
             "sha1": parquet_sha1(output_path),
@@ -126,12 +135,27 @@ def main() -> None:
         if negatives_per_query is not None:
             manifest_entry["negatives_per_query"] = negatives_per_query
         write_download_manifest(manifest_path, manifest_entry)
-        print(f"Wrote {totals[lang]:,} rows -> {output_path}")
+        print(f"Wrote {triplet_count:,} triplets ({total_rows:,} rows) -> {output_path}")
+        if triplet_count < target_triplets:
+            under_target.append(lang)
+            print(
+                f"WARNING: {lang} collected {triplet_count:,} triplets "
+                f"< target {target_triplets:,} (source exhausted)"
+            )
 
     print("\nRetrieval download complete.")
     for lang, count in totals.items():
         status = " (skipped)" if lang in skipped else ""
-        print(f"  {lang}: {count:,} rows at {local_root / 'retrieval' / lang / 'corpus.parquet'}{status}")
+        triplets = triplet_totals.get(lang, 0)
+        print(
+            f"  {lang}: {triplets:,} triplets / {count:,} rows "
+            f"at {local_root / 'retrieval' / lang / 'corpus.parquet'}{status}"
+        )
+    if under_target:
+        print(
+            "\nWARNING: under-target languages (no public bulk source or source exhausted): "
+            + ", ".join(under_target)
+        )
     print("\nNext: rsync local_data_root to gpu_data_root, then run retrieval GPU scripts.")
 
 

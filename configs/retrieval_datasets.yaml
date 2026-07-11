@@ -1,5 +1,6 @@
 # Retrieval distillation corpora for phase 2 (16 languages).
 # Download with scripts/01_download_retrieval_local.py on local infra (internet).
+# Target: ~1M triplets/lang where public sources allow (ko/th are MIRACL+MrTyDi only).
 
 languages:
   - en
@@ -36,126 +37,8 @@ miracl_defaults: &miracl_defaults
   positives_per_query: 1
   negatives_per_query: 8
 
-en:
-  target_triplets: 300000
-  sources:
-    - name: miracl_hard_negatives_en
-      <<: *miracl_defaults
-      target_triplets: 10000
-      qrels_config: en
-      queries_config: queries-en
-      corpus_config: corpus-en
-    - name: msmarco_hard_triplets
-      target_triplets: 290000
-      hf_path: sentence-transformers/msmarco-co-condenser-margin-mse-sym-mnrl-mean-v1
-      config: triplet
-      split: train
-      streaming: true
-      query_column: query
-      positive_column: positive
-      negative_column: negative
-      negatives_per_triplet: 1
-
-ar:
-  target_triplets: 150000
-  sources:
-    - name: miracl_hard_negatives
-      <<: *miracl_defaults
-      qrels_config: ar
-      queries_config: queries-ar
-      corpus_config: corpus-ar
-
-de:
-  target_triplets: 150000
-  sources:
-    - name: miracl_hard_negatives
-      <<: *miracl_defaults
-      qrels_config: de
-      queries_config: queries-de
-      corpus_config: corpus-de
-
-es:
-  target_triplets: 150000
-  sources:
-    - name: miracl_hard_negatives
-      <<: *miracl_defaults
-      qrels_config: es
-      queries_config: queries-es
-      corpus_config: corpus-es
-
-fr:
-  target_triplets: 150000
-  sources:
-    - name: miracl_hard_negatives
-      <<: *miracl_defaults
-      qrels_config: fr
-      queries_config: queries-fr
-      corpus_config: corpus-fr
-
-hi:
-  target_triplets: 150000
-  sources:
-    - name: miracl_hard_negatives
-      <<: *miracl_defaults
-      qrels_config: hi
-      queries_config: queries-hi
-      corpus_config: corpus-hi
-
-id:
-  target_triplets: 150000
-  sources:
-    - name: miracl_hard_negatives
-      <<: *miracl_defaults
-      qrels_config: id
-      queries_config: queries-id
-      corpus_config: corpus-id
-
-ja:
-  target_triplets: 150000
-  sources:
-    - name: miracl_hard_negatives
-      <<: *miracl_defaults
-      qrels_config: ja
-      queries_config: queries-ja
-      corpus_config: corpus-ja
-
-ko:
-  target_triplets: 150000
-  sources:
-    - name: miracl_hard_negatives
-      <<: *miracl_defaults
-      qrels_config: ko
-      queries_config: queries-ko
-      corpus_config: corpus-ko
-
-ru:
-  target_triplets: 150000
-  sources:
-    - name: miracl_hard_negatives
-      <<: *miracl_defaults
-      qrels_config: ru
-      queries_config: queries-ru
-      corpus_config: corpus-ru
-
-th:
-  target_triplets: 150000
-  sources:
-    - name: miracl_hard_negatives
-      <<: *miracl_defaults
-      qrels_config: th
-      queries_config: queries-th
-      corpus_config: corpus-th
-
-zh:
-  target_triplets: 150000
-  sources:
-    - name: miracl_hard_negatives
-      <<: *miracl_defaults
-      qrels_config: zh
-      queries_config: queries-zh
-      corpus_config: corpus-zh
-
-mmarco_defaults: &mmarco_defaults
+# Large mMARCO mined triplets (~3M/lang); take up to lang target.
+mmarco_triplet10_defaults: &mmarco_triplet10_defaults
   hf_path: hotchpotch/mmarco-hard-negatives-reranker-filtered
   split: train
   streaming: true
@@ -163,6 +46,14 @@ mmarco_defaults: &mmarco_defaults
   positive_column: positive
   negative_column: negative
   negatives_per_triplet: 1
+
+# unicamp train ID triples + translated query/collection texts (hi/ru/pt).
+unicamp_train_ids_defaults: &unicamp_train_ids_defaults
+  loader: unicamp_mmarco_train_ids
+  hf_path: unicamp-dl/mmarco
+  translation: google
+  negatives_per_triplet: 1
+  max_id_triples: 2000000
 
 mmarco_vi_defaults: &mmarco_vi_defaults
   hf_path: chieunq/mMARCO_vietnamese
@@ -173,41 +64,215 @@ mmarco_vi_defaults: &mmarco_vi_defaults
   negative_column: negative
   negatives_per_triplet: 1
 
-mmarco_pt_defaults: &mmarco_pt_defaults
-  loader: unicamp_mmarco
-  hf_path: unicamp-dl/mmarco
-  translation: google
+mrtydi_hn_defaults: &mrtydi_hn_defaults
+  loader: mrtydi_hard_negatives
+  hf_path: crystina-z/mrtydi-mContriever-mmarco-HN
   split: train
-  streaming: false
-  negatives_per_triplet: 1
+  streaming: true
+  query_column: query
+  positives_column: positive_passages
+  negatives_column: negative_passages
+  negatives_per_triplet: 8
+
+en:
+  target_triplets: 1000000
+  sources:
+    - name: miracl_hard_negatives_en
+      <<: *miracl_defaults
+      target_triplets: 1000
+      qrels_config: en
+      queries_config: queries-en
+      corpus_config: corpus-en
+    - name: mmarco_triplets
+      <<: *mmarco_triplet10_defaults
+      config: english-triplet-10
+
+ar:
+  target_triplets: 1000000
+  sources:
+    - name: miracl_hard_negatives
+      <<: *miracl_defaults
+      target_triplets: 1000
+      qrels_config: ar
+      queries_config: queries-ar
+      corpus_config: corpus-ar
+    - name: mmarco_triplets
+      <<: *mmarco_triplet10_defaults
+      config: arabic-triplet-10
+
+de:
+  target_triplets: 1000000
+  sources:
+    - name: miracl_hard_negatives
+      <<: *miracl_defaults
+      target_triplets: 1000
+      qrels_config: de
+      queries_config: queries-de
+      corpus_config: corpus-de
+    - name: mmarco_triplets
+      <<: *mmarco_triplet10_defaults
+      config: german-triplet-10
+
+es:
+  target_triplets: 1000000
+  sources:
+    - name: miracl_hard_negatives
+      <<: *miracl_defaults
+      target_triplets: 1000
+      qrels_config: es
+      queries_config: queries-es
+      corpus_config: corpus-es
+    - name: mmarco_triplets
+      <<: *mmarco_triplet10_defaults
+      config: spanish-triplet-10
+
+fr:
+  target_triplets: 1000000
+  sources:
+    - name: miracl_hard_negatives
+      <<: *miracl_defaults
+      target_triplets: 1000
+      qrels_config: fr
+      queries_config: queries-fr
+      corpus_config: corpus-fr
+    - name: mmarco_triplets
+      <<: *mmarco_triplet10_defaults
+      config: french-triplet-10
+
+hi:
+  target_triplets: 1000000
+  sources:
+    - name: miracl_hard_negatives
+      <<: *miracl_defaults
+      target_triplets: 1000
+      qrels_config: hi
+      queries_config: queries-hi
+      corpus_config: corpus-hi
+    - name: mmarco_train_ids
+      <<: *unicamp_train_ids_defaults
+      config: hindi
+
+id:
+  target_triplets: 1000000
+  sources:
+    - name: miracl_hard_negatives
+      <<: *miracl_defaults
+      target_triplets: 1000
+      qrels_config: id
+      queries_config: queries-id
+      corpus_config: corpus-id
+    - name: mmarco_triplets
+      <<: *mmarco_triplet10_defaults
+      config: indonesian-triplet-10
+
+ja:
+  target_triplets: 1000000
+  sources:
+    - name: miracl_hard_negatives
+      <<: *miracl_defaults
+      target_triplets: 1000
+      qrels_config: ja
+      queries_config: queries-ja
+      corpus_config: corpus-ja
+    - name: mmarco_triplets
+      <<: *mmarco_triplet10_defaults
+      config: japanese-triplet-10
+
+ko:
+  # No public mMARCO for Korean; expect <<1M (MIRACL dev + Mr. TyDi HN).
+  target_triplets: 1000000
+  sources:
+    - name: miracl_hard_negatives
+      <<: *miracl_defaults
+      target_triplets: 1000
+      qrels_config: ko
+      queries_config: queries-ko
+      corpus_config: corpus-ko
+    - name: mrtydi_hard_negatives
+      <<: *mrtydi_hn_defaults
+      config: korean
+
+ru:
+  target_triplets: 1000000
+  sources:
+    - name: miracl_hard_negatives
+      <<: *miracl_defaults
+      target_triplets: 1000
+      qrels_config: ru
+      queries_config: queries-ru
+      corpus_config: corpus-ru
+    - name: mmarco_train_ids
+      <<: *unicamp_train_ids_defaults
+      config: russian
+
+th:
+  # No public mMARCO for Thai; expect <<1M (MIRACL dev + Mr. TyDi HN).
+  target_triplets: 1000000
+  sources:
+    - name: miracl_hard_negatives
+      <<: *miracl_defaults
+      target_triplets: 1000
+      qrels_config: th
+      queries_config: queries-th
+      corpus_config: corpus-th
+    - name: mrtydi_hard_negatives
+      <<: *mrtydi_hn_defaults
+      config: thai
+
+zh:
+  target_triplets: 1000000
+  sources:
+    - name: miracl_hard_negatives
+      <<: *miracl_defaults
+      target_triplets: 1000
+      qrels_config: zh
+      queries_config: queries-zh
+      corpus_config: corpus-zh
+    - name: mmarco_triplets
+      <<: *mmarco_triplet10_defaults
+      config: chinese-triplet-10
 
 it:
-  target_triplets: 300000
+  target_triplets: 1000000
   sources:
     - name: mmarco_triplets
-      <<: *mmarco_defaults
-      config: italian-triplet
+      <<: *mmarco_triplet10_defaults
+      config: italian-triplet-10
 
 pt:
-  target_triplets: 300000
+  target_triplets: 1000000
   sources:
-    - name: mmarco_triplets
-      <<: *mmarco_pt_defaults
+    - name: mmarco_train_ids
+      <<: *unicamp_train_ids_defaults
       config: portuguese
 
 vi:
-  target_triplets: 300000
+  target_triplets: 1000000
   sources:
     - name: mmarco_triplets
       <<: *mmarco_vi_defaults
 
 pl:
-  target_triplets: 200000
+  target_triplets: 1000000
   sources:
     - name: maupqa
       loader: maupqa_csv
       hf_path: ipipan/maupqa
-      csv_subsets: [msmarco, nq, poquad, mqa, mkqa]
+      csv_subsets:
+        - msmarco
+        - nq
+        - poquad
+        - mqa
+        - mkqa
+        - gpt3-cc
+        - gpt3.5-cc
+        - gpt3.5-wiki
+        - 1z10
+        - czy-wiesz-v2
+        - multilingual-NLI
+        - poleval2021-pairs
+        - templates
+        - wiki-def
       split: train
       streaming: true
       query_column: question

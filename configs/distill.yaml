@@ -182,7 +182,7 @@ eval:
       - MSMARCO
       - MIRACLRetrieval
     query_prompt: web_search_query
-    batch_size: 64
+    batch_size: 192  # lower on OOM; embeddings cached under .retrieval_emb_cache/
     languages:
       MSMARCO: eng-Latn
       MIRACLRetrieval:

@@ -356,6 +356,8 @@ python scripts/05_compare_retrieval.py --config configs/distill.yaml \
   --parallel --gpus 0,1,2
 ```
 
+Local retrieval encodes with `eval.retrieval.batch_size` (default **192**). If encode OOMs, lower that value in `configs/distill.yaml`. With `--local-retrieval`, query/corpus embeddings are cached under `{paths.retrieval_eval_data_root|output}/.retrieval_emb_cache/` (keyed by model path, task, subset, max length, prompt). Use `--no-emb-cache` to disable or `--refresh-emb-cache` to force re-encode. nDCG@10 uses batched CUDA matmul when available (exact search; streams corpus chunks).
+
 Tasks: MSMARCO (EN), MIRACLRetrieval (12 langs), BEIR-PL (PL). Suites:
 
 | Suite | Tasks | MIRACL langs |

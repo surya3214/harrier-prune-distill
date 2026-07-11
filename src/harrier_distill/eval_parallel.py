@@ -232,6 +232,7 @@ def _retrieval_eval_worker(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
                 resolved_paths[task_name] = Path(value)
 
     try:
+        emb_cache_root = job.get("emb_cache_root")
         summary = evaluate_retrieval(
             job["model_path"],
             tasks=job["tasks"],
@@ -246,6 +247,10 @@ def _retrieval_eval_worker(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
             label=label,
             gpu=gpu_id,
             quiet=True,
+            emb_cache_root=Path(emb_cache_root) if emb_cache_root else None,
+            use_emb_cache=bool(job.get("use_emb_cache", True)),
+            refresh_emb_cache=bool(job.get("refresh_emb_cache", False)),
+            ndcg_device=job.get("ndcg_device", "auto"),
         )
         return label, make_jsonable(summary)
     finally:

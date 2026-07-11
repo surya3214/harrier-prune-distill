@@ -43,6 +43,17 @@ def parse_args() -> argparse.Namespace:
         help="Evaluate from local retrieval parquet (offline; no MTEB/HF download)",
     )
     parser.add_argument(
+        "--emb-cache",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Cache query/corpus embeddings on disk (default: on with --local-retrieval)",
+    )
+    parser.add_argument(
+        "--refresh-emb-cache",
+        action="store_true",
+        help="Force re-encode and overwrite the embedding cache",
+    )
+    parser.add_argument(
         "--parallel",
         action="store_true",
         help="Evaluate teacher/student/baseline on separate GPUs in parallel",
@@ -69,6 +80,13 @@ def parse_args() -> argparse.Namespace:
         help="Optional directory for per-model logs when using --parallel",
     )
     return parser.parse_args()
+
+
+def _resolve_emb_cache_root(paths: dict, output_root: Path) -> Path | None:
+    root = paths.get("retrieval_eval_data_root")
+    if root is not None and str(root) != "":
+        return Path(root)
+    return output_root
 
 
 def main() -> None:
@@ -104,6 +122,9 @@ def main() -> None:
         retrieval_cfg.get("languages"),
     )
 
+    use_emb_cache = args.emb_cache if args.emb_cache is not None else bool(args.local_retrieval)
+    emb_cache_root = _resolve_emb_cache_root(paths, output_root) if use_emb_cache else None
+
     comparison = compare_retrieval(
         teacher_path=teacher_path,
         student_path=args.student,
@@ -111,7 +132,7 @@ def main() -> None:
         suite=args.suite,
         tasks=args.tasks,
         query_prompt=retrieval_cfg.get("query_prompt", "web_search_query"),
-        batch_size=int(retrieval_cfg.get("batch_size", eval_cfg.get("batch_size", 64))),
+        batch_size=int(retrieval_cfg.get("batch_size", eval_cfg.get("batch_size", 192))),
         output_dir=eval_dir / "mteb_runs",
         miracl_subsets=miracl_subsets,
         use_local_retrieval=args.local_retrieval,
@@ -122,6 +143,9 @@ def main() -> None:
         max_workers=args.max_workers,
         quiet=args.quiet or None,
         log_dir=args.log_dir,
+        emb_cache_root=emb_cache_root if args.local_retrieval else None,
+        use_emb_cache=use_emb_cache and args.local_retrieval,
+        refresh_emb_cache=args.refresh_emb_cache,
     )
 
     print_retrieval_compare_summary(comparison)

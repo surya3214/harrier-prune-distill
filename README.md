@@ -16,7 +16,7 @@ Local (internet)                GPU (offline, 4x H100)
 
 - **Languages:** `en`, `ko`, `ar`, `zh`, `fr`, `de`, `hi`, `id`, `it`, `ja`, `pt`, `ru`, `es`, `vi`, `th`, `pl` (training order in `languages.yaml`)
 - **Prompt:** `sts_query` (STS) / `web_search_query` (retrieval queries)
-- **Loss:** MSE + cosine (STS); MSE + cosine + pairwise_mse (retrieval)
+- **Loss:** MSE + cosine (STS); MSE + cosine + score_kl (retrieval)
 - **Production data:** 1M texts/lang × 16 ≈ 16M STS rows; ~2.9M retrieval triplets
 - **Seq length:** 512 tokens
 
@@ -30,24 +30,29 @@ training:
     mse: 0.8
     cosine: 0.2
     pairwise_mse: 0.0
+    score_kl: 0.0
+  pairwise_triplets_per_batch: 96
 
 phases:
   retrieval:
+    score_kl_temperature: 0.05
     losses:
-      mse: 0.4
-      cosine: 0.2
-      pairwise_mse: 0.4
+      mse: 0.2
+      cosine: 0.4
+      pairwise_mse: 0.0
+      score_kl: 0.4
 ```
 
 | Loss | Description | STS phase | Retrieval phase |
 |------|-------------|-----------|-----------------|
-| `mse` | Pointwise MSE vs cached teacher embeddings | Yes | Yes |
+| `mse` | Pointwise MSE vs cached teacher embeddings | Yes | Yes (lower weight) |
 | `cosine` | `1 - cosine_similarity(student, teacher)` on normalized vectors | Yes | Yes |
-| `pairwise_mse` | MSE on query↔doc dot products per triplet vs teacher | No (weight 0) | Yes |
+| `pairwise_mse` | MSE on query↔doc dot products per triplet vs teacher | No (weight 0) | Optional / off by default |
+| `score_kl` | Softmax-KL on query↔doc score distributions per triplet | No (weight 0) | Yes |
 
 **Contrastive loss is not implemented** — optional Phase-4 fallback only (see Fallback ladder).
 
-**Pairwise MSE requirement:** Retrieval embedding parquet must include `triplet_id` (from `02_generate_teacher_embeddings.py --phase retrieval`).
+**Triplet loss requirement:** Retrieval embedding parquet must include `triplet_id` (from `02_generate_teacher_embeddings.py --phase retrieval`). MIRACL train corpora use `negatives_per_query: 8` hard negatives per query.
 
 ## Setup
 
@@ -304,6 +309,20 @@ python scripts/01_download_retrieval_local.py --config configs/distill.yaml --la
 
 Outputs `{local_data_root}/retrieval/{lang}/corpus.parquet` with `role` and `triplet_id` columns. `--skip-existing` / `--force` supported.
 
+**Regen after raising MIRACL `negatives_per_query` (or switching to `score_kl`):** old corpora are stale — rebuild, rsync, re-embed, retrain:
+
+```bash
+# Local (internet)
+python scripts/01_download_retrieval_local.py --config configs/distill.yaml --lang all --force
+rsync -avP "$LOCAL_DATA_ROOT/retrieval/" user@gpu-host:"$GPU_DATA_ROOT/retrieval/"
+
+# GPU (offline): git pull for score_kl + configs, then
+bash scripts/run_gpu_retrieval_pipeline.sh
+# then 04/05 --local-retrieval
+```
+
+Manifests store `target_triplets` and `negatives_per_query` so a negatives bump does not false-skip; `--force` still recommended when intentionally rebuilding.
+
 ### Download retrieval eval benchmarks (local, internet)
 
 For offline GPU eval (no MTEB/HF at eval time):
@@ -375,7 +394,7 @@ Note: `it` / `pt` / `vi` have training corpora but **no** retrieval eval benchma
 | Symptom | Action |
 |---------|--------|
 | STS gap >10% after KO step | Increase `training.losses.cosine` (e.g. `0.1–0.5`) |
-| Low pointwise MSE but poor STS/retrieval | Add `pairwise_mse` on retrieval after re-embedding with `triplet_id` |
+| Low pointwise MSE but poor STS/retrieval | Ensure retrieval `score_kl` is on; re-download MIRACL with `--force` after raising `negatives_per_query`, re-embed with `triplet_id` |
 | Still lagging | Small contrastive pass on NLI pairs |
 | Pruned baseline very low | Check layer removal; consider hidden-state distill |
 | KO noisy | Increase KLUE-NLI / KoWiki mix in `datasets.yaml` |

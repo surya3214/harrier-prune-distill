@@ -109,7 +109,7 @@ def get_phase_config(cfg: dict[str, Any], phase: str) -> dict[str, Any]:
     return phases[phase]
 
 
-LOSS_NAMES = ("mse", "cosine", "pairwise_mse")
+LOSS_NAMES = ("mse", "cosine", "pairwise_mse", "score_kl")
 
 
 def get_loss_weights(cfg: dict[str, Any], phase: str) -> dict[str, float]:
@@ -132,6 +132,19 @@ def get_loss_weights(cfg: dict[str, Any], phase: str) -> dict[str, float]:
         raise ValueError("at least one loss weight must be > 0")
 
     return weights
+
+
+def get_score_kl_temperature(cfg: dict[str, Any], phase: str) -> float:
+    """Merge training.score_kl_temperature with phases.<phase> override."""
+    train_cfg = cfg.get("training", {})
+    temperature = float(train_cfg.get("score_kl_temperature", 0.05))
+    if phase != "sts":
+        phase_cfg = cfg.get("phases", {}).get(phase, {})
+        if "score_kl_temperature" in phase_cfg:
+            temperature = float(phase_cfg["score_kl_temperature"])
+    if temperature <= 0:
+        raise ValueError(f"score_kl_temperature must be > 0, got {temperature}")
+    return temperature
 
 
 def get_resolved_paths(cfg: dict[str, Any]) -> dict[str, Path | None]:
@@ -427,7 +440,14 @@ def should_skip_download(
     target_rows: int,
     force: bool,
     skip_existing: bool,
+    expected_negatives_per_query: int | None = None,
 ) -> bool:
+    """Return True when an existing download can be reused.
+
+    STS manifests use ``target_samples`` + ``rows``. Retrieval manifests use
+    ``target_triplets`` (not row counts), and optionally ``negatives_per_query``
+    so raising MIRACL negatives invalidates a stale corpus.
+    """
     if force or not skip_existing:
         return False
     if not output_path.exists():
@@ -435,6 +455,17 @@ def should_skip_download(
     manifest = read_download_manifest(manifest_path)
     if manifest is None:
         return False
+
+    if "target_triplets" in manifest:
+        completed_triplets = int(manifest.get("target_triplets", 0))
+        if completed_triplets < int(target_rows):
+            return False
+        if expected_negatives_per_query is not None:
+            stored = manifest.get("negatives_per_query")
+            if stored is None or int(stored) != int(expected_negatives_per_query):
+                return False
+        return True
+
     rows = int(manifest.get("rows", 0))
     target = int(manifest.get("target_samples", target_rows))
     return rows >= target

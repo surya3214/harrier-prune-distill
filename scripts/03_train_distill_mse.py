@@ -27,6 +27,7 @@ from harrier_distill.config import (
     get_phase_config,
     get_previous_lang,
     get_resolved_paths,
+    get_score_kl_temperature,
     get_training_order,
     load_distill_config,
     parse_lang_list,
@@ -43,6 +44,7 @@ from harrier_distill.losses import (
     cosine_embedding_loss,
     format_loss_postfix,
     pairwise_mse_loss,
+    pairwise_score_kl_loss,
     pointwise_mse_loss,
 )
 from harrier_distill.model import (
@@ -277,7 +279,8 @@ def main() -> None:
         prompt_name = query_prompt
 
     batch_size = int(train_cfg.get("train_batch_size_per_gpu", 256))
-    pairwise_triplets_per_batch = int(train_cfg.get("pairwise_triplets_per_batch", 64))
+    pairwise_triplets_per_batch = int(train_cfg.get("pairwise_triplets_per_batch", 96))
+    score_kl_temperature = get_score_kl_temperature(cfg, args.phase)
     learning_rate = float(train_cfg.get("learning_rate", 1e-5))
     weight_decay = float(train_cfg.get("weight_decay", 0.01))
     grad_clip = float(train_cfg.get("grad_clip", 1.0))
@@ -316,16 +319,21 @@ def main() -> None:
     )
 
     use_pairwise = loss_weights.get("pairwise_mse", 0.0) > 0
-    if use_pairwise and not dataset.has_triplets:
+    use_score_kl = loss_weights.get("score_kl", 0.0) > 0
+    use_triplet = use_pairwise or use_score_kl
+    if use_triplet and not dataset.has_triplets:
         if is_main_process(rank):
             print(
-                "WARNING: pairwise_mse weight > 0 but embedding parquet has no usable triplets. "
+                "WARNING: pairwise_mse/score_kl weight > 0 but embedding parquet has no usable triplets. "
                 "Re-run 02_generate_teacher_embeddings.py --phase retrieval after triplet_id support. "
-                "Disabling pairwise_mse for this run."
+                "Disabling triplet losses for this run."
             )
         loss_weights = dict(loss_weights)
         loss_weights["pairwise_mse"] = 0.0
+        loss_weights["score_kl"] = 0.0
         use_pairwise = False
+        use_score_kl = False
+        use_triplet = False
         if sum(loss_weights.values()) <= 0:
             loss_weights["mse"] = 1.0
 
@@ -351,7 +359,9 @@ def main() -> None:
     if is_main_process(rank):
         print(f"Loading student from: {init_path}")
         if dataset.has_triplets:
-            print(f"Loaded {len(dataset.triplet_id_list):,} retrieval triplets for pairwise loss")
+            print(f"Loaded {len(dataset.triplet_id_list):,} retrieval triplets for pairwise/score_kl loss")
+        if use_score_kl:
+            print(f"score_kl_temperature={score_kl_temperature}")
 
     model = SentenceTransformer(
         str(init_path),
@@ -392,8 +402,14 @@ def main() -> None:
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
     global_step = 0
-    running_totals = {"total": 0.0, "mse": 0.0, "cosine": 0.0, "pairwise_mse": 0.0}
-    running_counts = {"mse": 0, "cosine": 0, "pairwise_mse": 0}
+    running_totals = {
+        "total": 0.0,
+        "mse": 0.0,
+        "cosine": 0.0,
+        "pairwise_mse": 0.0,
+        "score_kl": 0.0,
+    }
+    running_counts = {"mse": 0, "cosine": 0, "pairwise_mse": 0, "score_kl": 0}
 
     for epoch in range(num_epochs):
         if sampler is not None:
@@ -413,6 +429,7 @@ def main() -> None:
             mse_loss = None
             cosine_loss = None
             pairwise_loss = None
+            score_kl_loss = None
 
             if use_pointwise:
                 texts = batch["text"]
@@ -439,7 +456,7 @@ def main() -> None:
                 if loss_weights.get("cosine", 0.0) > 0:
                     cosine_loss = cosine_embedding_loss(student_emb, teacher_emb)
 
-            if use_pairwise:
+            if use_triplet:
                 triplet_seed = seed + rank + global_step + step_idx
                 triplet_rng_step = np.random.default_rng(triplet_seed)
                 triplets = dataset.sample_triplets(pairwise_triplets_per_batch, triplet_rng_step)
@@ -454,13 +471,21 @@ def main() -> None:
                         max_length=max_length,
                     )
                 if student_triplets:
-                    pairwise_loss = pairwise_mse_loss(student_triplets, teacher_triplets)
+                    if use_pairwise:
+                        pairwise_loss = pairwise_mse_loss(student_triplets, teacher_triplets)
+                    if use_score_kl:
+                        score_kl_loss = pairwise_score_kl_loss(
+                            student_triplets,
+                            teacher_triplets,
+                            temperature=score_kl_temperature,
+                        )
 
             components = combine_weighted_losses(
                 weights=loss_weights,
                 mse=mse_loss,
                 cosine=cosine_loss,
                 pairwise_mse=pairwise_loss,
+                score_kl=score_kl_loss,
             )
             loss = components.total
 
@@ -482,6 +507,9 @@ def main() -> None:
             if components.pairwise_mse is not None:
                 running_totals["pairwise_mse"] += components.pairwise_mse.item()
                 running_counts["pairwise_mse"] += 1
+            if components.score_kl is not None:
+                running_totals["score_kl"] += components.score_kl.item()
+                running_counts["score_kl"] += 1
 
             if is_main_process(rank):
                 postfix = format_loss_postfix(components, loss_weights)
@@ -508,6 +536,8 @@ def main() -> None:
             "avg_mse": running_totals["mse"] / max(running_counts["mse"], 1),
             "avg_cosine": running_totals["cosine"] / max(running_counts["cosine"], 1),
             "avg_pairwise_mse": running_totals["pairwise_mse"] / max(running_counts["pairwise_mse"], 1),
+            "avg_score_kl": running_totals["score_kl"] / max(running_counts["score_kl"], 1),
+            "score_kl_temperature": score_kl_temperature,
             "loss_weights": loss_weights,
             "checkpoint_dir": str(checkpoint_dir),
             "init_model": str(init_path),

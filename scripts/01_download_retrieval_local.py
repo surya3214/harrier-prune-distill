@@ -25,6 +25,17 @@ from harrier_distill.config import (
 from harrier_distill.retrieval import build_retrieval_corpus, get_retrieval_lang_configs
 
 
+def _max_negatives_per_query(lang_cfg: dict) -> int | None:
+    """Return MIRACL negatives_per_query when present; else None for non-MIRACL langs."""
+    values: list[int] = []
+    for source in lang_cfg.get("sources", []):
+        if "negatives_per_query" in source:
+            values.append(int(source["negatives_per_query"]))
+    if not values:
+        return None
+    return max(values)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default=str(PROJECT_ROOT / "configs" / "distill.yaml"))
@@ -80,6 +91,7 @@ def main() -> None:
         output_path = local_root / "retrieval" / lang / "corpus.parquet"
         manifest_path = local_root / "retrieval" / lang / "manifest.json"
         target_triplets = int(lang_cfgs[lang].get("target_triplets", 0))
+        negatives_per_query = _max_negatives_per_query(lang_cfgs[lang])
 
         if should_skip_download(
             output_path=output_path,
@@ -87,6 +99,7 @@ def main() -> None:
             target_rows=target_triplets,
             force=args.force,
             skip_existing=args.skip_existing,
+            expected_negatives_per_query=negatives_per_query,
         ):
             manifest = json.load(open(manifest_path, encoding="utf-8"))
             totals[lang] = int(manifest.get("rows", 0))
@@ -102,17 +115,17 @@ def main() -> None:
             output_path=output_path,
             shard_size=shard_size,
         )
-        write_download_manifest(
-            manifest_path,
-            {
-                "lang": lang,
-                "rows": totals[lang],
-                "target_triplets": target_triplets,
-                "path": str(output_path),
-                "sha1": parquet_sha1(output_path),
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            },
-        )
+        manifest_entry = {
+            "lang": lang,
+            "rows": totals[lang],
+            "target_triplets": target_triplets,
+            "path": str(output_path),
+            "sha1": parquet_sha1(output_path),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        if negatives_per_query is not None:
+            manifest_entry["negatives_per_query"] = negatives_per_query
+        write_download_manifest(manifest_path, manifest_entry)
         print(f"Wrote {totals[lang]:,} rows -> {output_path}")
 
     print("\nRetrieval download complete.")

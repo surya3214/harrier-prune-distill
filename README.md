@@ -437,6 +437,7 @@ scripts/
   05_compare_sts.py
   05_compare_retrieval.py
   06_debug_mse_alignment.py
+  retrieval_resume_status.py
   run_gpu_pipeline.sh
   run_gpu_retrieval_pipeline.sh
   validate_dataset_splits.py

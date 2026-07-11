@@ -50,15 +50,17 @@ class ConfigTests(unittest.TestCase):
 
     def test_get_loss_weights_retrieval_phase(self) -> None:
         cfg = {
-            "training": {"losses": {"mse": 0.8, "cosine": 0.2, "pairwise_mse": 0.0}},
+            "training": {"losses": {"mse": 0.8, "cosine": 0.2, "pairwise_mse": 0.0, "score_kl": 0.0}},
             "phases": {
                 "retrieval": {
-                    "losses": {"mse": 0.4, "cosine": 0.2, "pairwise_mse": 0.4},
+                    "losses": {"mse": 0.2, "cosine": 0.4, "pairwise_mse": 0.0, "score_kl": 0.4},
                 }
             },
         }
         weights = get_loss_weights(cfg, "retrieval")
-        self.assertAlmostEqual(weights["mse"], 0.4)
+        self.assertAlmostEqual(weights["mse"], 0.2)
+        self.assertAlmostEqual(weights["cosine"], 0.4)
+        self.assertAlmostEqual(weights["score_kl"], 0.4)
         self.assertAlmostEqual(sum(weights.values()), 1.0)
 
 

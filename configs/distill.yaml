@@ -50,17 +50,20 @@ training:
     mse: 0.8
     cosine: 0.2
     pairwise_mse: 0.0
-  pairwise_triplets_per_batch: 64
+    score_kl: 0.0
+  pairwise_triplets_per_batch: 96
 
 phases:
   retrieval:
     query_prompt: web_search_query
     doc_prompt: null
     default_num_epochs: 1
+    score_kl_temperature: 0.05
     losses:
-      mse: 0.4
-      cosine: 0.2
-      pairwise_mse: 0.4
+      mse: 0.2
+      cosine: 0.4
+      pairwise_mse: 0.0
+      score_kl: 0.4
     languages:
       - en
       - ar

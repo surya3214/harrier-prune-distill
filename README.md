@@ -17,7 +17,7 @@ Local (internet)                GPU (offline, 4x H100)
 - **Languages:** `en`, `ko`, `ar`, `zh`, `fr`, `de`, `hi`, `id`, `it`, `ja`, `pt`, `ru`, `es`, `vi`, `th`, `pl` (training order in `languages.yaml`)
 - **Prompt:** `sts_query` (STS) / `web_search_query` (retrieval queries)
 - **Loss:** MSE + cosine (STS); MSE + cosine + score_kl (retrieval)
-- **Production data:** 1M texts/lang × 16 ≈ 16M STS rows; ~2.9M retrieval triplets
+- **Production data:** 1M texts/lang × 16 ≈ 16M STS rows; ~1M retrieval triplets/lang (ko/th much smaller)
 - **Seq length:** 512 tokens
 
 ## Training losses
@@ -284,14 +284,17 @@ Local (internet)                         GPU (offline)
 
 ### Datasets (16 languages)
 
+Target **~1M triplets/lang** where public sources allow. MIRACL hard-negatives (`negatives_per_query: 8`) is a small high-quality supplement; bulk volume comes from mMARCO.
+
 | Group | Langs | Retrieval train source |
 |-------|-------|------------------------|
-| MIRACL | ar, de, en, es, fr, hi, id, ja, ko, ru, th, zh | `datalama/miracl-hard-negatives` (150k triplets/lang) |
-| mMARCO | it | `hotchpotch/mmarco-hard-negatives-reranker-filtered` (italian-triplet) |
-| mMARCO | pt | `unicamp-dl/mmarco` TSV + BM25 runs (google translation) |
+| MIRACL + mMARCO | ar, de, en, es, fr, id, ja, zh | MIRACL dev HN + `hotchpotch/...` `{lang}-triplet-10` |
+| MIRACL + unicamp | hi, ru | MIRACL dev HN + `unicamp-dl/mmarco` train ID triples |
+| mMARCO | it | `hotchpotch/...` `italian-triplet-10` |
+| mMARCO | pt | `unicamp-dl/mmarco` train ID triples (google translation) |
 | mMARCO | vi | `chieunq/mMARCO_vietnamese` |
-| MAUPQA | pl | `ipipan/maupqa` CSV subsets (legacy script bypass) |
-| EN bulk | en | MS MARCO triplets + MIRACL supplement |
+| MAUPQA | pl | `ipipan/maupqa` all train CSV subsets |
+| MIRACL + Mr. TyDi | ko, th | MIRACL + `crystina-z/mrtydi-mContriever-mmarco-HN` only (≪1M; no public mMARCO) |
 
 Config: [`configs/retrieval_datasets.yaml`](configs/retrieval_datasets.yaml).
 
@@ -309,6 +312,8 @@ python scripts/01_download_retrieval_local.py --config configs/distill.yaml --la
 
 Outputs `{local_data_root}/retrieval/{lang}/corpus.parquet` with `role` and `triplet_id` columns. `--skip-existing` / `--force` supported.
 
+`--force` for all langs pulls ~**30–45 GB** into the local HF cache (unicamp `hi`/`ru`/`pt` collections dominate). The built corpora you rsync to the GPU are ~**15–30 GB** under `retrieval/` (14 langs × ~1M triplets; `ko`/`th` tiny).
+
 **Regen after raising MIRACL `negatives_per_query` (or switching to `score_kl`):** old corpora are stale — rebuild, rsync, re-embed, retrain:
 
 ```bash
@@ -321,7 +326,7 @@ bash scripts/run_gpu_retrieval_pipeline.sh
 # then 04/05 --local-retrieval
 ```
 
-Manifests store `target_triplets` and `negatives_per_query` so a negatives bump does not false-skip; `--force` still recommended when intentionally rebuilding.
+Manifests store actual `triplet_count`, configured `target_triplets`, and `negatives_per_query`. Skip only when `triplet_count >= target`; under-target langs (e.g. `ko`/`th`) print a warning. `--force` still recommended when intentionally rebuilding.
 
 ### Download retrieval eval benchmarks (local, internet)
 

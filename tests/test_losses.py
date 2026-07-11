@@ -164,7 +164,7 @@ class LossTests(unittest.TestCase):
 
 
 class SkipDownloadTests(unittest.TestCase):
-    def test_retrieval_skip_uses_triplets_not_rows(self) -> None:
+    def test_retrieval_skip_uses_actual_triplet_count(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             corpus = root / "corpus.parquet"
@@ -174,7 +174,33 @@ class SkipDownloadTests(unittest.TestCase):
                 manifest,
                 {
                     "rows": 150_000,  # would false-skip under old rows>=target logic
-                    "target_triplets": 30_000,
+                    "target_triplets": 150_000,
+                    "triplet_count": 30_000,
+                    "negatives_per_query": 8,
+                },
+            )
+            self.assertFalse(
+                should_skip_download(
+                    output_path=corpus,
+                    manifest_path=manifest,
+                    target_rows=150_000,
+                    force=False,
+                    skip_existing=True,
+                    expected_negatives_per_query=8,
+                )
+            )
+
+    def test_retrieval_skip_legacy_manifest_without_triplet_count(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            corpus = root / "corpus.parquet"
+            manifest = root / "manifest.json"
+            corpus.write_text("placeholder", encoding="utf-8")
+            write_download_manifest(
+                manifest,
+                {
+                    "rows": 1_500_000,
+                    "target_triplets": 150_000,
                     "negatives_per_query": 8,
                 },
             )
@@ -200,6 +226,7 @@ class SkipDownloadTests(unittest.TestCase):
                 {
                     "rows": 1_500_000,
                     "target_triplets": 150_000,
+                    "triplet_count": 150_000,
                     "negatives_per_query": 3,
                 },
             )

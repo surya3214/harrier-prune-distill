@@ -223,6 +223,123 @@ def iter_unicamp_mmarco_triplets(source_cfg: dict[str, Any]) -> Iterator[tuple[s
         yield query, positive, negatives[:negatives_per]
 
 
+def _load_tsv_id_text_map(
+    *,
+    data_files: str,
+    needed_ids: set[str],
+) -> dict[str, str]:
+    """Stream a unicamp id\\ttext TSV and keep rows whose id is in ``needed_ids``."""
+    out: dict[str, str] = {}
+    if not needed_ids:
+        return out
+    dataset = _load_hf_csv_stream(
+        data_files=data_files,
+        sep="\t",
+        column_names=["id", "text"],
+    )
+    for row in dataset:
+        doc_id = str(row["id"])
+        if doc_id not in needed_ids:
+            continue
+        out[doc_id] = str(row["text"])
+        if len(out) >= len(needed_ids):
+            break
+    return out
+
+
+def iter_unicamp_mmarco_train_id_triplets(
+    source_cfg: dict[str, Any],
+) -> Iterator[tuple[str, str, list[str]]]:
+    """Yield triplets from unicamp MS MARCO train ID triples + translated texts.
+
+    Uses ``data/triples.train.ids.small.tsv`` (qid, positive_pid, negative_pid) with
+    ``queries/train/{lang}_queries.train.tsv`` and ``collections/{lang}_collection.tsv``.
+    """
+    from huggingface_hub import hf_hub_download
+
+    lang = source_cfg["config"]
+    translation = source_cfg.get("translation", "google")
+    repo = source_cfg.get("hf_path", "unicamp-dl/mmarco")
+    negatives_per = int(source_cfg.get("negatives_per_triplet", 1))
+    max_triples = int(source_cfg.get("max_id_triples", 2_000_000))
+    base = f"hf://datasets/{repo}/data/{translation}"
+    triples_relpath = source_cfg.get("triples_relpath", "data/triples.train.ids.small.tsv")
+    queries_relpath = source_cfg.get(
+        "queries_relpath",
+        f"queries/train/{lang}_queries.train.tsv",
+    )
+    collection_relpath = source_cfg.get(
+        "collection_relpath",
+        f"collections/{lang}_collection.tsv",
+    )
+
+    triples_path = hf_hub_download(repo, triples_relpath, repo_type="dataset")
+    id_triples: list[tuple[str, str, str]] = []
+    needed_query_ids: set[str] = set()
+    needed_doc_ids: set[str] = set()
+    with open(triples_path, encoding="utf-8") as handle:
+        for line in handle:
+            if len(id_triples) >= max_triples:
+                break
+            parts = line.strip().split("\t")
+            if len(parts) < 3:
+                continue
+            qid, pos_id, neg_id = str(parts[0]), str(parts[1]), str(parts[2])
+            id_triples.append((qid, pos_id, neg_id))
+            needed_query_ids.add(qid)
+            needed_doc_ids.add(pos_id)
+            needed_doc_ids.add(neg_id)
+
+    query_by_id = _load_tsv_id_text_map(
+        data_files=f"{base}/{queries_relpath}",
+        needed_ids=needed_query_ids,
+    )
+    corpus_by_id = _load_tsv_id_text_map(
+        data_files=f"{base}/{collection_relpath}",
+        needed_ids=needed_doc_ids,
+    )
+
+    for qid, pos_id, neg_id in id_triples:
+        query = query_by_id.get(qid)
+        positive = corpus_by_id.get(pos_id)
+        negative = corpus_by_id.get(neg_id)
+        if not query or not positive or not negative:
+            continue
+        yield query, positive, [negative][:negatives_per]
+
+
+def iter_mrtydi_hard_negative_triplets(
+    source_cfg: dict[str, Any],
+) -> Iterator[tuple[str, str, list[str]]]:
+    """Yield triplets from crystina-z/mrtydi-mContriever-mmarco-HN style datasets."""
+    dataset = _load_hf_dataset(source_cfg)
+    query_col = source_cfg.get("query_column", "query")
+    positives_col = source_cfg.get("positives_column", "positive_passages")
+    negatives_col = source_cfg.get("negatives_column", "negative_passages")
+    negatives_per = int(source_cfg.get("negatives_per_triplet", 8))
+
+    def _passage_text(passage: Any) -> str:
+        if isinstance(passage, dict):
+            title = passage.get("title") or ""
+            body = passage.get("text") or passage.get("passage") or ""
+            if title:
+                return f"{title}\n{body}".strip()
+            return str(body).strip()
+        return str(passage).strip()
+
+    for row in dataset:
+        query = row.get(query_col)
+        positives = row.get(positives_col) or []
+        negatives = row.get(negatives_col) or []
+        if not query or not positives or not negatives:
+            continue
+        positive_text = _passage_text(positives[0])
+        negative_texts = [_passage_text(item) for item in negatives if _passage_text(item)]
+        if not positive_text or not negative_texts:
+            continue
+        yield str(query), positive_text, negative_texts[:negatives_per]
+
+
 def iter_msmarco_triplets(source_cfg: dict[str, Any]) -> Iterator[tuple[str, str, list[str]]]:
     dataset = _load_hf_dataset(source_cfg)
     query_col = source_cfg.get("query_column", "query")
@@ -360,8 +477,12 @@ def collect_retrieval_rows(
         loader = source_cfg.get("loader")
         if name.startswith("miracl"):
             triplet_iter = iter_miracl_triplets(source_cfg)
+        elif loader == "unicamp_mmarco_train_ids":
+            triplet_iter = iter_unicamp_mmarco_train_id_triplets(source_cfg)
         elif loader == "unicamp_mmarco":
             triplet_iter = iter_unicamp_mmarco_triplets(source_cfg)
+        elif loader == "mrtydi_hard_negatives" or name.startswith("mrtydi"):
+            triplet_iter = iter_mrtydi_hard_negative_triplets(source_cfg)
         elif loader == "maupqa_csv" or name == "maupqa":
             triplet_iter = iter_maupqa_triplets(source_cfg)
         elif "msmarco" in name or "mmarco" in name:
@@ -377,7 +498,10 @@ def collect_retrieval_rows(
         for query, positive, negatives in triplet_iter:
             if triplet_idx >= target_triplets or source_added >= source_limit:
                 break
-            if not dedupe.add_if_new(query):
+            # Dedupe exact triplet content (not query alone) so multi-neg / multi-pos
+            # MS MARCO rows can contribute distinct training triplets up to target.
+            triplet_key = "\n".join([query, positive, *negatives])
+            if not dedupe.add_if_new(triplet_key):
                 continue
             expanded = expand_triplet_rows(
                 lang=lang,
@@ -409,7 +533,12 @@ def build_retrieval_corpus(
     min_chars: int,
     output_path: Path,
     shard_size: int,
-) -> int:
+) -> tuple[int, int]:
+    """Build retrieval parquet corpus.
+
+    Returns:
+        (total_rows, triplet_count)
+    """
     rows = collect_retrieval_rows(
         lang=lang,
         lang_cfg=lang_cfg,
@@ -439,7 +568,7 @@ def build_retrieval_corpus(
     total_rows = merge_parquet_shards(shard_dir, output_path)
     triplet_count = len({row["triplet_id"] for row in rows if "triplet_id" in row})
     print(f"  {lang}: {triplet_count:,} triplets -> {total_rows:,} corpus rows")
-    return total_rows
+    return total_rows, triplet_count
 
 
 def get_retrieval_lang_configs(cfg: dict[str, Any]) -> tuple[list[str], dict[str, dict[str, Any]]]:

@@ -194,8 +194,10 @@ def encode_retrieval_queries(
     batch_size: int,
     show_progress: bool = False,
     quiet: bool | None = None,
-) -> np.ndarray:
-    outputs: list[np.ndarray] = []
+    return_torch: bool = False,
+) -> np.ndarray | torch.Tensor:
+    outputs_np: list[np.ndarray] = []
+    outputs_t: list[torch.Tensor] = []
     starts = range(0, len(texts), batch_size)
     n_batches = (len(texts) + batch_size - 1) // batch_size if texts else 0
     for start in task_progress(
@@ -213,8 +215,19 @@ def encode_retrieval_queries(
             device=device,
             max_length=max_length,
         )
-        outputs.append(emb.float().cpu().numpy())
-    return np.concatenate(outputs, axis=0).astype(np.float32) if outputs else np.zeros((0, 0), dtype=np.float32)
+        if return_torch:
+            outputs_t.append(emb.float().detach())
+        else:
+            outputs_np.append(emb.float().cpu().numpy())
+    if return_torch:
+        if not outputs_t:
+            return torch.zeros((0, 0), dtype=torch.float32, device=device)
+        return torch.cat(outputs_t, dim=0)
+    return (
+        np.concatenate(outputs_np, axis=0).astype(np.float32)
+        if outputs_np
+        else np.zeros((0, 0), dtype=np.float32)
+    )
 
 
 @torch.inference_mode()
@@ -227,14 +240,71 @@ def encode_retrieval_corpus(
     batch_size: int,
     show_progress: bool = False,
     quiet: bool | None = None,
+    out_memmap_path: Path | None = None,
 ) -> np.ndarray:
-    outputs: list[np.ndarray] = []
-    starts = range(0, len(texts), batch_size)
-    n_batches = (len(texts) + batch_size - 1) // batch_size if texts else 0
+    """Encode corpus to a float32 ndarray or memmap file.
+
+    When ``out_memmap_path`` is set, embeddings are written directly to that path
+    (atomic via a temp file) to avoid a giant in-memory concatenate.
+    """
+    n = len(texts)
+    if n == 0:
+        empty = np.zeros((0, 0), dtype=np.float32)
+        if out_memmap_path is not None:
+            ensure_dir(out_memmap_path.parent)
+            np.save(out_memmap_path, empty)
+        return empty
+
+    starts = range(0, n, batch_size)
+    n_batches = (n + batch_size - 1) // batch_size
+    first = encode_texts(
+        model,
+        texts[0 : min(batch_size, n)],
+        device=device,
+        max_length=max_length,
+        prompt_name=None,
+    )
+    dim = int(first.shape[1])
+    first_np = first.float().cpu().numpy().astype(np.float32, copy=False)
+
+    if out_memmap_path is not None:
+        ensure_dir(out_memmap_path.parent)
+        tmp_path = out_memmap_path.with_suffix(out_memmap_path.suffix + ".tmp")
+        if tmp_path.exists():
+            tmp_path.unlink()
+        mm = np.lib.format.open_memmap(
+            tmp_path, mode="w+", dtype=np.float32, shape=(n, dim)
+        )
+        mm[0 : first_np.shape[0]] = first_np
+        offset = first_np.shape[0]
+        for start in task_progress(
+            range(batch_size, n, batch_size),
+            desc="encode-corpus",
+            total=max(n_batches - 1, 0),
+            quiet=quiet,
+            disable=not show_progress,
+        ):
+            batch = texts[start : start + batch_size]
+            emb = encode_texts(
+                model,
+                batch,
+                device=device,
+                max_length=max_length,
+                prompt_name=None,
+            )
+            arr = emb.float().cpu().numpy().astype(np.float32, copy=False)
+            mm[offset : offset + arr.shape[0]] = arr
+            offset += arr.shape[0]
+        mm.flush()
+        del mm
+        tmp_path.replace(out_memmap_path)
+        return np.load(out_memmap_path, mmap_mode="r")
+
+    outputs: list[np.ndarray] = [first_np]
     for start in task_progress(
-        starts,
+        range(batch_size, n, batch_size),
         desc="encode-corpus",
-        total=n_batches,
+        total=max(n_batches - 1, 0),
         quiet=quiet,
         disable=not show_progress,
     ):
@@ -246,8 +316,8 @@ def encode_retrieval_corpus(
             max_length=max_length,
             prompt_name=None,
         )
-        outputs.append(emb.float().cpu().numpy())
-    return np.concatenate(outputs, axis=0).astype(np.float32) if outputs else np.zeros((0, 0), dtype=np.float32)
+        outputs.append(emb.float().cpu().numpy().astype(np.float32, copy=False))
+    return np.concatenate(outputs, axis=0).astype(np.float32)
 
 
 def _dcg_at_k(relevances: list[float], k: int) -> float:
@@ -272,7 +342,7 @@ def compute_ndcg_at_k(
     return _dcg_at_k(relevances, k) / idcg
 
 
-def score_retrieval_subset(
+def _score_retrieval_subset_numpy(
     query_embeddings: np.ndarray,
     corpus_embeddings: np.ndarray,
     *,
@@ -284,7 +354,7 @@ def score_retrieval_subset(
     show_progress: bool = False,
     quiet: bool | None = None,
 ) -> float:
-    """Compute mean nDCG@10 over queries using chunked corpus scoring."""
+    """Compute mean nDCG@10 over queries using chunked NumPy corpus scoring."""
     if len(query_ids) == 0:
         return 0.0
 
@@ -306,7 +376,7 @@ def score_retrieval_subset(
         merged: list[tuple[float, str]] = []
 
         for start in range(0, len(corpus_embeddings), corpus_chunk_size):
-            chunk = corpus_embeddings[start : start + corpus_chunk_size]
+            chunk = np.asarray(corpus_embeddings[start : start + corpus_chunk_size])
             sims = chunk @ q_emb
             local_top = min(top_k, len(sims))
             if local_top == 0:
@@ -325,6 +395,233 @@ def score_retrieval_subset(
     return float(np.mean(scores))
 
 
+@torch.inference_mode()
+def _score_retrieval_subset_torch(
+    query_embeddings: np.ndarray | torch.Tensor,
+    corpus_embeddings: np.ndarray,
+    *,
+    query_ids: list[str],
+    doc_ids: list[str],
+    qrels: dict[str, dict[str, float]],
+    top_k: int = 10,
+    corpus_chunk_size: int = 50_000,
+    query_chunk_size: int = 1024,
+    device: torch.device | str = "cuda",
+    show_progress: bool = False,
+    quiet: bool | None = None,
+) -> float:
+    """Batched exact nDCG@10 via torch matmul + topk (CUDA or CPU tensors)."""
+    if len(query_ids) == 0:
+        return 0.0
+
+    torch_device = torch.device(device)
+    if isinstance(query_embeddings, torch.Tensor):
+        queries = query_embeddings.detach().to(device=torch_device, dtype=torch.float32)
+    else:
+        queries = torch.as_tensor(query_embeddings, dtype=torch.float32, device=torch_device)
+
+    n_queries = int(queries.shape[0])
+    active = [i for i, qid in enumerate(query_ids) if qrels.get(qid)]
+    active_set = set(active)
+    if not active:
+        return 0.0
+
+    # Per-query candidate lists: list of (score, doc_id)
+    candidates: list[list[tuple[float, str]]] = [[] for _ in range(n_queries)]
+    n_docs = len(corpus_embeddings)
+    corpus_starts = list(range(0, n_docs, corpus_chunk_size))
+
+    for c_start in task_progress(
+        corpus_starts,
+        desc="ndcg@10-corpus",
+        total=len(corpus_starts),
+        quiet=quiet,
+        disable=not show_progress,
+    ):
+        chunk_np = np.asarray(corpus_embeddings[c_start : c_start + corpus_chunk_size])
+        if chunk_np.size == 0:
+            continue
+        chunk = torch.as_tensor(chunk_np, dtype=torch.float32, device=torch_device)
+        local_k = min(top_k, chunk.shape[0])
+
+        for q_start in range(0, n_queries, query_chunk_size):
+            q_end = min(q_start + query_chunk_size, n_queries)
+            q_batch = queries[q_start:q_end]
+            # [chunk, q_batch]
+            sims = chunk @ q_batch.T
+            top_scores, top_idx = torch.topk(sims, k=local_k, dim=0, largest=True, sorted=True)
+            top_scores_cpu = top_scores.detach().cpu()
+            top_idx_cpu = top_idx.detach().cpu()
+            for local_q in range(q_end - q_start):
+                global_q = q_start + local_q
+                if global_q not in active_set:
+                    continue
+                for rank_i in range(local_k):
+                    local_doc = int(top_idx_cpu[rank_i, local_q])
+                    score = float(top_scores_cpu[rank_i, local_q])
+                    candidates[global_q].append((score, doc_ids[c_start + local_doc]))
+            del sims, top_scores, top_idx, q_batch
+        del chunk
+
+    scores: list[float] = []
+    for q_idx in active:
+        merged = candidates[q_idx]
+        if not merged:
+            continue
+        merged.sort(key=lambda item: item[0], reverse=True)
+        ranked = [doc_id for _, doc_id in merged[:top_k]]
+        scores.append(compute_ndcg_at_k(ranked, qrels[query_ids[q_idx]], k=top_k))
+
+    if not scores:
+        return 0.0
+    return float(np.mean(scores))
+
+
+def resolve_ndcg_device(device: str | None = "auto") -> str:
+    """Return ``cuda`` or ``numpy`` backend label for nDCG scoring."""
+    if device in (None, "auto"):
+        return "cuda" if torch.cuda.is_available() else "numpy"
+    if device in {"cuda", "gpu"}:
+        if not torch.cuda.is_available():
+            return "numpy"
+        return "cuda"
+    if device in {"cpu", "numpy"}:
+        return "numpy"
+    raise ValueError(f"Unknown nDCG device={device!r}; expected auto|cuda|cpu|numpy")
+
+
+def score_retrieval_subset(
+    query_embeddings: np.ndarray | torch.Tensor,
+    corpus_embeddings: np.ndarray,
+    *,
+    query_ids: list[str],
+    doc_ids: list[str],
+    qrels: dict[str, dict[str, float]],
+    top_k: int = 10,
+    corpus_chunk_size: int = 50_000,
+    query_chunk_size: int = 1024,
+    device: str | None = "auto",
+    show_progress: bool = False,
+    quiet: bool | None = None,
+) -> float:
+    """Compute mean nDCG@10; uses batched CUDA when available (exact search)."""
+    backend = resolve_ndcg_device(device)
+    if backend == "cuda":
+        return _score_retrieval_subset_torch(
+            query_embeddings,
+            corpus_embeddings,
+            query_ids=query_ids,
+            doc_ids=doc_ids,
+            qrels=qrels,
+            top_k=top_k,
+            corpus_chunk_size=corpus_chunk_size,
+            query_chunk_size=query_chunk_size,
+            device="cuda",
+            show_progress=show_progress,
+            quiet=quiet,
+        )
+
+    if isinstance(query_embeddings, torch.Tensor):
+        query_np = query_embeddings.detach().float().cpu().numpy()
+    else:
+        query_np = query_embeddings
+    return _score_retrieval_subset_numpy(
+        query_np,
+        corpus_embeddings,
+        query_ids=query_ids,
+        doc_ids=doc_ids,
+        qrels=qrels,
+        top_k=top_k,
+        corpus_chunk_size=corpus_chunk_size,
+        show_progress=show_progress,
+        quiet=quiet,
+    )
+
+
+def retrieval_emb_cache_dir(cache_root: Path) -> Path:
+    return Path(cache_root) / ".retrieval_emb_cache"
+
+
+def retrieval_emb_cache_key(
+    *,
+    model_path: str | Path,
+    task: str,
+    subset: str | None,
+    max_length: int,
+    query_prompt: str,
+    split: str,
+) -> str:
+    resolved = str(Path(model_path).resolve()) if Path(model_path).exists() else str(model_path)
+    raw = "|".join(
+        [
+            resolved,
+            task,
+            subset or "",
+            str(max_length),
+            query_prompt,
+            split,
+            "float32",
+        ]
+    )
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:20]
+
+
+def retrieval_emb_cache_paths(cache_root: Path, key: str) -> dict[str, Path]:
+    base = retrieval_emb_cache_dir(cache_root) / key
+    return {
+        "dir": base,
+        "queries": base / "queries.npy",
+        "corpus": base / "corpus.npy",
+        "meta": base / "meta.json",
+    }
+
+
+def load_retrieval_emb_cache(
+    paths: dict[str, Path],
+    *,
+    n_queries: int,
+    n_docs: int,
+) -> tuple[np.ndarray, np.ndarray] | None:
+    if not paths["meta"].exists() or not paths["queries"].exists() or not paths["corpus"].exists():
+        return None
+    try:
+        meta = json.loads(paths["meta"].read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if int(meta.get("n_queries", -1)) != n_queries or int(meta.get("n_docs", -1)) != n_docs:
+        return None
+    queries = np.load(paths["queries"], mmap_mode=None)
+    corpus = np.load(paths["corpus"], mmap_mode="r")
+    if queries.shape[0] != n_queries or corpus.shape[0] != n_docs:
+        return None
+    return queries.astype(np.float32, copy=False), corpus
+
+
+def save_retrieval_emb_cache_meta(
+    paths: dict[str, Path],
+    *,
+    n_queries: int,
+    n_docs: int,
+    dim: int,
+    model_path: str,
+    task: str,
+    subset: str | None,
+) -> None:
+    ensure_dir(paths["dir"])
+    meta = {
+        "n_queries": n_queries,
+        "n_docs": n_docs,
+        "dim": dim,
+        "model_path": model_path,
+        "task": task,
+        "subset": subset,
+        "dtype": "float32",
+    }
+    tmp = paths["meta"].with_suffix(".tmp")
+    tmp.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    tmp.replace(paths["meta"])
+
+
 def evaluate_retrieval_task_local(
     model: SentenceTransformer,
     data: RetrievalEvalData,
@@ -334,42 +631,114 @@ def evaluate_retrieval_task_local(
     max_length: int,
     batch_size: int,
     corpus_chunk_size: int = 50_000,
+    query_chunk_size: int = 1024,
     label: str | None = None,
     gpu: int | None = None,
     quiet: bool | None = None,
     show_progress: bool = True,
+    model_path: str | Path | None = None,
+    task_name: str | None = None,
+    subset: str | None = None,
+    emb_cache_root: str | Path | None = None,
+    use_emb_cache: bool = True,
+    refresh_emb_cache: bool = False,
+    ndcg_device: str | None = "auto",
 ) -> dict[str, Any]:
     show_bars = show_progress and not (quiet if quiet is not None else False)
-    log_eval(
-        f"Encoding queries ({len(data.query_texts):,})...",
-        label=label,
-        gpu=gpu,
-    )
-    query_emb = encode_retrieval_queries(
-        model,
-        data.query_texts,
-        query_prompt=query_prompt,
-        device=device,
-        max_length=max_length,
-        batch_size=batch_size,
-        show_progress=show_bars,
-        quiet=quiet,
-    )
-    log_eval(
-        f"Encoding corpus ({len(data.doc_texts):,} docs)...",
-        label=label,
-        gpu=gpu,
-    )
-    corpus_emb = encode_retrieval_corpus(
-        model,
-        data.doc_texts,
-        device=device,
-        max_length=max_length,
-        batch_size=batch_size,
-        show_progress=show_bars,
-        quiet=quiet,
-    )
-    log_eval("Computing nDCG@10...", label=label, gpu=gpu)
+    score_backend = resolve_ndcg_device(ndcg_device)
+    keep_queries_on_device = score_backend == "cuda" and device.type == "cuda"
+
+    cache_paths: dict[str, Path] | None = None
+    if use_emb_cache and emb_cache_root is not None and model_path is not None:
+        key = retrieval_emb_cache_key(
+            model_path=model_path,
+            task=task_name or data.task,
+            subset=subset or data.lang,
+            max_length=max_length,
+            query_prompt=query_prompt,
+            split=data.split,
+        )
+        cache_paths = retrieval_emb_cache_paths(Path(emb_cache_root), key)
+
+    query_emb: np.ndarray | torch.Tensor | None = None
+    corpus_emb: np.ndarray | None = None
+
+    if (
+        cache_paths is not None
+        and not refresh_emb_cache
+        and (cached := load_retrieval_emb_cache(
+            cache_paths, n_queries=len(data.query_ids), n_docs=len(data.doc_ids)
+        ))
+        is not None
+    ):
+        log_eval(f"Embedding cache hit: {cache_paths['dir']}", label=label, gpu=gpu)
+        query_np, corpus_emb = cached
+        if keep_queries_on_device:
+            query_emb = torch.as_tensor(query_np, dtype=torch.float32, device=device)
+        else:
+            query_emb = query_np
+    else:
+        log_eval(
+            f"Encoding queries ({len(data.query_texts):,})...",
+            label=label,
+            gpu=gpu,
+        )
+        query_emb = encode_retrieval_queries(
+            model,
+            data.query_texts,
+            query_prompt=query_prompt,
+            device=device,
+            max_length=max_length,
+            batch_size=batch_size,
+            show_progress=show_bars,
+            quiet=quiet,
+            return_torch=keep_queries_on_device,
+        )
+        log_eval(
+            f"Encoding corpus ({len(data.doc_texts):,} docs)...",
+            label=label,
+            gpu=gpu,
+        )
+        corpus_out: Path | None = None
+        if cache_paths is not None:
+            ensure_dir(cache_paths["dir"])
+            corpus_out = cache_paths["corpus"]
+        corpus_emb = encode_retrieval_corpus(
+            model,
+            data.doc_texts,
+            device=device,
+            max_length=max_length,
+            batch_size=batch_size,
+            show_progress=show_bars,
+            quiet=quiet,
+            out_memmap_path=corpus_out,
+        )
+        if cache_paths is not None:
+            # Persist queries as numpy (atomic write; avoid np.save auto-.npy)
+            q_np = (
+                query_emb.detach().float().cpu().numpy()
+                if isinstance(query_emb, torch.Tensor)
+                else np.asarray(query_emb, dtype=np.float32)
+            )
+            ensure_dir(cache_paths["dir"])
+            tmp_q = cache_paths["queries"].with_name(cache_paths["queries"].name + ".writing")
+            with open(tmp_q, "wb") as handle:
+                np.save(handle, q_np)
+            tmp_q.replace(cache_paths["queries"])
+            dim = int(corpus_emb.shape[1]) if corpus_emb.ndim == 2 else 0
+            save_retrieval_emb_cache_meta(
+                cache_paths,
+                n_queries=len(data.query_ids),
+                n_docs=len(data.doc_ids),
+                dim=dim,
+                model_path=str(model_path),
+                task=task_name or data.task,
+                subset=subset or data.lang,
+            )
+            log_eval(f"Wrote embedding cache: {cache_paths['dir']}", label=label, gpu=gpu)
+
+    assert corpus_emb is not None and query_emb is not None
+    log_eval(f"Computing nDCG@10 on {score_backend}...", label=label, gpu=gpu)
     score = score_retrieval_subset(
         query_emb,
         corpus_emb,
@@ -377,6 +746,8 @@ def evaluate_retrieval_task_local(
         doc_ids=data.doc_ids,
         qrels=data.qrels,
         corpus_chunk_size=corpus_chunk_size,
+        query_chunk_size=query_chunk_size,
+        device=score_backend if score_backend == "cuda" else "numpy",
         show_progress=show_bars,
         quiet=quiet,
     )
@@ -397,6 +768,7 @@ def evaluate_retrieval_task_local(
         "split": data.split,
         "lang": data.lang,
         "hf_subset": data.lang,
+        "ndcg_backend": score_backend,
     }
 
 
@@ -414,13 +786,18 @@ def evaluate_retrieval_local(
     task_names: list[str],
     local_task_paths: dict[str, RetrievalTaskPaths],
     query_prompt: str = "web_search_query",
-    batch_size: int = 64,
+    batch_size: int = 192,
     max_length: int = 512,
     corpus_chunk_size: int = 50_000,
+    query_chunk_size: int = 1024,
     device: torch.device | str | None = None,
     label: str | None = None,
     gpu: int | None = None,
     quiet: bool | None = None,
+    emb_cache_root: str | Path | None = None,
+    use_emb_cache: bool = True,
+    refresh_emb_cache: bool = False,
+    ndcg_device: str | None = "auto",
 ) -> dict[str, Any]:
     """Evaluate retrieval nDCG@10 from local parquet directories (offline)."""
     if device is None:
@@ -436,6 +813,8 @@ def evaluate_retrieval_local(
         "model_path": str(model_path),
         "backend": "local",
         "query_prompt": query_prompt,
+        "ndcg_backend": resolve_ndcg_device(ndcg_device),
+        "emb_cache": bool(use_emb_cache and emb_cache_root is not None),
         "tasks": {},
     }
 
@@ -469,13 +848,22 @@ def evaluate_retrieval_local(
                     max_length=max_length,
                     batch_size=batch_size,
                     corpus_chunk_size=corpus_chunk_size,
+                    query_chunk_size=query_chunk_size,
                     label=label,
                     gpu=gpu,
                     quiet=quiet,
                     show_progress=show_progress,
+                    model_path=model_path,
+                    task_name=task_name,
+                    subset=subset_label,
+                    emb_cache_root=emb_cache_root,
+                    use_emb_cache=use_emb_cache,
+                    refresh_emb_cache=refresh_emb_cache,
+                    ndcg_device=ndcg_device,
                 )
                 log_eval(
-                    f"{task_name} [{subset_label}]: nDCG@10={result['main_score']:.4f} ({timer.elapsed_str()})",
+                    f"{task_name} [{subset_label}]: nDCG@10={result['main_score']:.4f} "
+                    f"({timer.elapsed_str()}, {result.get('ndcg_backend', 'unknown')})",
                     label=label,
                     gpu=gpu,
                 )

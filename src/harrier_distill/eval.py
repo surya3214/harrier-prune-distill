@@ -176,7 +176,7 @@ def evaluate_retrieval(
     *,
     tasks: list[str] | None = None,
     query_prompt: str = "web_search_query",
-    batch_size: int = 64,
+    batch_size: int = 192,
     output_dir: str | Path | None = None,
     miracl_subsets: list[str] | None = None,
     use_local_retrieval: bool = False,
@@ -186,6 +186,10 @@ def evaluate_retrieval(
     label: str | None = None,
     gpu: int | None = None,
     quiet: bool | None = None,
+    emb_cache_root: str | Path | None = None,
+    use_emb_cache: bool = True,
+    refresh_emb_cache: bool = False,
+    ndcg_device: str | None = "auto",
 ) -> dict[str, Any]:
     """Run retrieval tasks via MTEB or local parquet and return per-task nDCG@10."""
     import torch
@@ -209,6 +213,10 @@ def evaluate_retrieval(
             label=label,
             gpu=gpu,
             quiet=quiet,
+            emb_cache_root=emb_cache_root,
+            use_emb_cache=use_emb_cache,
+            refresh_emb_cache=refresh_emb_cache,
+            ndcg_device=ndcg_device,
         )
 
     log_eval(f"Loading model (MTEB): {model_path}", label=label, gpu=gpu)
@@ -277,7 +285,7 @@ def compare_retrieval(
     suite: str = "en_ko",
     tasks: list[str] | None = None,
     query_prompt: str = "web_search_query",
-    batch_size: int = 64,
+    batch_size: int = 192,
     output_dir: str | Path | None = None,
     miracl_subsets: list[str] | None = None,
     use_local_retrieval: bool = False,
@@ -288,6 +296,10 @@ def compare_retrieval(
     max_workers: int | None = None,
     quiet: bool | None = None,
     log_dir: str | Path | None = None,
+    emb_cache_root: str | Path | None = None,
+    use_emb_cache: bool = True,
+    refresh_emb_cache: bool = False,
+    ndcg_device: str | None = "auto",
 ) -> dict[str, Any]:
     """Evaluate teacher and student (and optional baseline) on retrieval tasks."""
     task_names = get_retrieval_tasks_for_suite(suite, tasks=tasks)
@@ -348,6 +360,10 @@ def compare_retrieval(
                     "max_length": max_length,
                     "quiet": True if quiet is None else quiet,
                     "log_path": str(log_root / f"{label}.log") if log_root else None,
+                    "emb_cache_root": str(emb_cache_root) if emb_cache_root is not None else None,
+                    "use_emb_cache": use_emb_cache,
+                    "refresh_emb_cache": refresh_emb_cache,
+                    "ndcg_device": ndcg_device,
                 }
             )
             log_eval(
@@ -377,6 +393,10 @@ def compare_retrieval(
                 max_length=max_length,
                 label=label,
                 quiet=quiet,
+                emb_cache_root=emb_cache_root,
+                use_emb_cache=use_emb_cache,
+                refresh_emb_cache=refresh_emb_cache,
+                ndcg_device=ndcg_device,
             )
             log_eval(f"({idx}/{len(models)}) done in {timer.elapsed_str()}", label=label)
 

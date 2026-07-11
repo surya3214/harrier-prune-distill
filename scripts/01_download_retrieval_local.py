@@ -36,6 +36,17 @@ def _max_negatives_per_query(lang_cfg: dict) -> int | None:
     return max(values)
 
 
+def _max_negatives_per_triplet(lang_cfg: dict) -> int | None:
+    """Return max bulk negatives_per_triplet when present."""
+    values: list[int] = []
+    for source in lang_cfg.get("sources", []):
+        if "negatives_per_triplet" in source:
+            values.append(int(source["negatives_per_triplet"]))
+    if not values:
+        return None
+    return max(values)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default=str(PROJECT_ROOT / "configs" / "distill.yaml"))
@@ -94,6 +105,7 @@ def main() -> None:
         manifest_path = local_root / "retrieval" / lang / "manifest.json"
         target_triplets = int(lang_cfgs[lang].get("target_triplets", 0))
         negatives_per_query = _max_negatives_per_query(lang_cfgs[lang])
+        negatives_per_triplet = _max_negatives_per_triplet(lang_cfgs[lang])
 
         if should_skip_download(
             output_path=output_path,
@@ -102,6 +114,7 @@ def main() -> None:
             force=args.force,
             skip_existing=args.skip_existing,
             expected_negatives_per_query=negatives_per_query,
+            expected_negatives_per_triplet=negatives_per_triplet,
         ):
             manifest = json.load(open(manifest_path, encoding="utf-8"))
             totals[lang] = int(manifest.get("rows", 0))
@@ -134,6 +147,8 @@ def main() -> None:
         }
         if negatives_per_query is not None:
             manifest_entry["negatives_per_query"] = negatives_per_query
+        if negatives_per_triplet is not None:
+            manifest_entry["negatives_per_triplet"] = negatives_per_triplet
         write_download_manifest(manifest_path, manifest_entry)
         print(f"Wrote {triplet_count:,} triplets ({total_rows:,} rows) -> {output_path}")
         if triplet_count < target_triplets:

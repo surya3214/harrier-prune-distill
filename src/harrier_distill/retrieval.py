@@ -341,26 +341,103 @@ def iter_mrtydi_hard_negative_triplets(
 
 
 def iter_msmarco_triplets(source_cfg: dict[str, Any]) -> Iterator[tuple[str, str, list[str]]]:
+    """Yield triplets from query/positive/negative column datasets.
+
+    Supports:
+    - single ``negative`` column
+    - multi-neg columns via ``negative_columns: [negative_1, ...]`` (hard-negatives-7)
+    - optional ``group_negatives_by_query: true`` to pack 1-neg rows into multi-neg triplets
+    """
     dataset = _load_hf_dataset(source_cfg)
     query_col = source_cfg.get("query_column", "query")
     positive_col = source_cfg.get("positive_column", "positive")
     negative_col = source_cfg.get("negative_column", "negative")
+    negative_columns = source_cfg.get("negative_columns")
     negatives_per = int(source_cfg.get("negatives_per_triplet", 1))
+    group_by_query = bool(source_cfg.get("group_negatives_by_query", False))
 
-    for row in dataset:
-        query = row.get(query_col)
-        positive = row.get(positive_col)
-        negative = row.get(negative_col)
-        if not query or not positive:
-            continue
+    def _row_negatives(row: dict[str, Any]) -> list[str]:
         negatives: list[str] = []
-        if negative:
-            negatives.append(negative)
-        if negatives_per <= len(negatives):
-            yield str(query), str(positive), negatives[:negatives_per]
-        elif negatives:
-            yield str(query), str(positive), negatives
+        if negative_columns:
+            for col in negative_columns:
+                value = row.get(col)
+                if value:
+                    negatives.append(str(value))
+        else:
+            value = row.get(negative_col)
+            if value:
+                negatives.append(str(value))
+        return negatives
 
+    if not group_by_query:
+        for row in dataset:
+            query = row.get(query_col)
+            positive = row.get(positive_col)
+            if not query or not positive:
+                continue
+            negatives = _row_negatives(row)
+            if not negatives:
+                continue
+            yield str(query), str(positive), negatives[:negatives_per]
+        return
+
+    yield from _group_triplets_by_query(
+        (
+            (str(row[query_col]), str(row[positive_col]), _row_negatives(row))
+            for row in dataset
+            if row.get(query_col) and row.get(positive_col)
+        ),
+        negatives_per=negatives_per,
+    )
+
+
+def _group_triplets_by_query(
+    triplets: Iterator[tuple[str, str, list[str]]],
+    *,
+    negatives_per: int,
+) -> Iterator[tuple[str, str, list[str]]]:
+    """Pack 1-neg (or sparse) rows into multi-neg triplets keyed by query text.
+
+    Yields a query as soon as it reaches ``negatives_per`` so callers can stop
+    early at a triplet target without buffering the full source.
+    """
+    buckets: dict[str, dict[str, Any]] = {}
+    for query, positive, negatives in triplets:
+        bucket = buckets.get(query)
+        if bucket is None:
+            bucket = {"positive": positive, "negatives": [], "seen": set()}
+            buckets[query] = bucket
+        for neg in negatives:
+            if not neg or neg in bucket["seen"] or neg == bucket["positive"]:
+                continue
+            bucket["negatives"].append(neg)
+            bucket["seen"].add(neg)
+            if len(bucket["negatives"]) >= negatives_per:
+                break
+        if len(bucket["negatives"]) >= negatives_per:
+            yield query, bucket["positive"], bucket["negatives"][:negatives_per]
+            del buckets[query]
+
+    for query, bucket in buckets.items():
+        if not bucket["negatives"]:
+            continue
+        yield query, bucket["positive"], bucket["negatives"][:negatives_per]
+
+
+def iter_grouped_triplet_stream(
+    base_iter: Iterator[tuple[str, str, list[str]]],
+    *,
+    negatives_per: int,
+    group_by_query: bool,
+) -> Iterator[tuple[str, str, list[str]]]:
+    """Optionally wrap a triplet iterator with query-based negative packing."""
+    if not group_by_query:
+        for query, positive, negatives in base_iter:
+            if not negatives:
+                continue
+            yield query, positive, negatives[:negatives_per]
+        return
+    yield from _group_triplets_by_query(base_iter, negatives_per=negatives_per)
 
 def iter_maupqa_triplets(source_cfg: dict[str, Any]) -> Iterator[tuple[str, str, list[str]]]:
     """Yield (query, positive, negatives) from ipipan/maupqa question-passage pairs."""
@@ -489,6 +566,17 @@ def collect_retrieval_rows(
             triplet_iter = iter_msmarco_triplets(source_cfg)
         else:
             raise ValueError(f"Unknown retrieval source '{name}' for language '{lang}'")
+
+        # Multi-neg packing for 1-neg sources (unicamp train IDs, plain mMARCO, etc.).
+        # msmarco path already handles group_negatives_by_query internally.
+        if loader in {"unicamp_mmarco_train_ids", "unicamp_mmarco"} and bool(
+            source_cfg.get("group_negatives_by_query", False)
+        ):
+            triplet_iter = iter_grouped_triplet_stream(
+                triplet_iter,
+                negatives_per=int(source_cfg.get("negatives_per_triplet", 7)),
+                group_by_query=True,
+            )
 
         remaining_global = max(target_triplets - triplet_idx, 0)
         source_limit = int(source_cfg.get("target_triplets", remaining_global))

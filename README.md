@@ -350,8 +350,18 @@ Config: [`configs/retrieval_eval_datasets.yaml`](configs/retrieval_eval_datasets
 bash scripts/run_gpu_retrieval_pipeline.sh
 ```
 
-- **Init:** sequential resume per `languages.yaml` order
+- **Init:** sequential weight chaining per `languages.yaml` order (each lang inits from the previous lang’s checkpoint)
 - **Checkpoints:** `{output_dir}/retrieval/checkpoints/{lang}/` (legacy `checkpoint_en` / `checkpoint_final`)
+- **Resume:** re-run the same script after an interruption. It skips languages that already have `train_metrics.json` + `config.json`, and skips embed when `{lang}_embeddings.parquet` already exists. Continues from the next incomplete language.
+- **Force redo:** `bash scripts/run_gpu_retrieval_pipeline.sh --force` (or `FORCE=1`) ignores completion markers and re-runs all langs.
+- **Mid-lang crash:** that language has no checkpoint yet, so resume re-trains it from the previous lang’s weights (full epochs for that lang).
+
+Status helper (used by the shell script):
+
+```bash
+python scripts/retrieval_resume_status.py --config configs/distill.yaml --mode summary
+python scripts/retrieval_resume_status.py --config configs/distill.yaml --mode next
+```
 
 ### Retrieval eval
 
@@ -427,6 +437,7 @@ scripts/
   05_compare_sts.py
   05_compare_retrieval.py
   06_debug_mse_alignment.py
+  retrieval_resume_status.py
   run_gpu_pipeline.sh
   run_gpu_retrieval_pipeline.sh
   validate_dataset_splits.py

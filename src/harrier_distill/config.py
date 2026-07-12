@@ -254,6 +254,45 @@ def resolve_retrieval_checkpoint_path(cfg: dict[str, Any], lang: str) -> Path:
     return output_root / "retrieval" / "checkpoints" / lang
 
 
+def canonical_retrieval_checkpoint_dir(cfg: dict[str, Any], lang: str) -> Path:
+    """Per-lang retrieval checkpoint dir (where train_metrics.json is written)."""
+    return resolve_output_root(cfg) / "retrieval" / "checkpoints" / lang
+
+
+def is_retrieval_lang_complete(cfg: dict[str, Any], lang: str) -> bool:
+    """True when retrieval train finished for ``lang`` (metrics + SentenceTransformer config)."""
+    ckpt = canonical_retrieval_checkpoint_dir(cfg, lang)
+    return (ckpt / "train_metrics.json").is_file() and (ckpt / "config.json").is_file()
+
+
+def is_retrieval_embedding_complete(cfg: dict[str, Any], lang: str) -> bool:
+    """True when cached retrieval teacher embeddings exist for ``lang``."""
+    path = resolve_embedding_path(cfg, lang, phase="retrieval")
+    try:
+        return path.is_file() and path.stat().st_size > 0
+    except OSError:
+        return False
+
+
+def get_last_completed_retrieval_lang(cfg: dict[str, Any]) -> str | None:
+    """Last language in training order with a complete retrieval checkpoint, or None."""
+    last: str | None = None
+    for lang in get_training_order():
+        if is_retrieval_lang_complete(cfg, lang):
+            last = lang
+        else:
+            break
+    return last
+
+
+def get_next_incomplete_retrieval_lang(cfg: dict[str, Any]) -> str | None:
+    """First language in training order whose retrieval train is incomplete, or None if all done."""
+    for lang in get_training_order():
+        if not is_retrieval_lang_complete(cfg, lang):
+            return lang
+    return None
+
+
 def get_num_epochs(cfg: dict[str, Any], lang: str, phase: str) -> int:
     train_cfg = cfg.get("training", {})
     languages_cfg = load_languages_config()
